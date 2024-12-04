@@ -1,0 +1,12 @@
+.metals
+.vscode
+*.elf
+*.img
+.vscode-ctags
+*.log
+*.jou
+*.v
+vivado_proj/proj/*
+!vivado_proj/src/hdl/system_wrapper.v
+!.keep
+.Xil
