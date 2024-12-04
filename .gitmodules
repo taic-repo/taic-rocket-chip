@@ -2,3 +2,9 @@
 	path = rocket-chip
 	url = https://github.com/zflcs/rocket-chip.git
 	branch = taic
+[submodule "digilent-vivado-scripts"]
+	path = digilent-vivado-scripts
+	url = https://github.com/Digilent/digilent-vivado-scripts.git
+[submodule "riscv-tests"]
+	path = riscv-tests
+	url = https://github.com/ATS-INTC/riscv-tests.git
