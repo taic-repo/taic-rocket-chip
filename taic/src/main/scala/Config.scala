@@ -12,6 +12,9 @@ class WithCustomBootROM(resetAddress: BigInt, bootImgPath: String)
     up(BootROMLocated(x)).map(_.copy(hang = resetAddress, contentFileName = bootImgPath))
   })
 
+class WithTAIC extends Config((_, _, _) => {
+  case TAICKey => Some(TAICParams())
+})
 
 class TaicConfig extends Config(
   new WithNBigCores(2) ++
@@ -24,7 +27,8 @@ class TaicConfig extends Config(
     new WithDefaultSlavePort ++
     new WithoutTLMonitors ++
     new WithCoherentBusTopology ++
-    new BaseSubsystemConfig
+    new BaseSubsystemConfig ++ 
+    new WithTAIC 
 )
 
 class TaicTestConfig extends Config(new DefaultConfig )

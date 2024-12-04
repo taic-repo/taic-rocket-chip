@@ -55,6 +55,7 @@ class TestHarness()(implicit p: Parameters) extends Module {
 
 class FPGAZynqTop(implicit p: Parameters) extends RocketSubsystem
   with HasAsyncExtInterrupts
+  with CanHavePeripheryTAIC 
   with CanHaveSlaveAXI4Port
   with CanHaveMasterAXI4MemPort
   with CanHaveMasterAXI4MMIOPort {
