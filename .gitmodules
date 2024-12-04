@@ -5,6 +5,7 @@
 [submodule "digilent-vivado-scripts"]
 	path = digilent-vivado-scripts
 	url = https://github.com/Digilent/digilent-vivado-scripts.git
+	ignore = dirty
 [submodule "riscv-tests"]
 	path = riscv-tests
 	url = https://github.com/ATS-INTC/riscv-tests.git
