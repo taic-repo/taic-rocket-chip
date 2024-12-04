@@ -8,3 +8,6 @@
 [submodule "riscv-tests"]
 	path = riscv-tests
 	url = https://github.com/ATS-INTC/riscv-tests.git
+[submodule "device-tree-xlnx"]
+	path = device-tree-xlnx
+	url = https://github.com/Xilinx/device-tree-xlnx.git
