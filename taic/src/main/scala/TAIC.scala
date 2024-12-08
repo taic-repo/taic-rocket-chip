@@ -62,16 +62,29 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     println(s"TAIC map ${nDevices} external interrupts:")
 
 
-    val controller = Module(new Controller(4, 2, 64, 64))
+    // val controller = Module(new Controller(4, 2, 64, 64))
+    // val bitallocatorRegs = Seq(
+    //   0x00 -> Seq(RegField.r(64, controller.io.alloced)),
+    //   0x08 -> Seq(RegField.w(64, controller.io.free)),
+    //   0x10 -> Seq(RegField.w(64, controller.io.alloc))
+    // )
+    val queue = Module(new GlobalQueue(64, 2, 64))
     val bitallocatorRegs = Seq(
-      0x00 -> Seq(RegField.r(64, controller.io.alloced)),
-      0x08 -> Seq(RegField.w(64, controller.io.free)),
-      0x10 -> Seq(RegField.w(64, controller.io.alloc))
+      0x00 -> Seq(RegField.r(64, queue.io.alloc_lq)),
+      0x08 -> Seq(RegField.w(64, queue.io.free_lq)),
     )
+    val enqRegs = Seq.tabulate(2) { i =>
+      0x10 + 8 * i -> Seq(RegField.w(64, queue.io.enqs(i)))
+    }
+    val deqRegs = Seq.tabulate(2) { i =>
+      0x20 + 8 * i -> Seq(RegField.r(64, queue.io.deqs(i)))
+    }
 
 
     // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)
-    node.regmap((bitallocatorRegs): _*)
+    // node.regmap((bitallocatorRegs): _*)
+    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs): _*)
+
   }
 }
 

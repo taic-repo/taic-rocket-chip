@@ -52,6 +52,11 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     for (i <- 0 until gq_num) {
         gqs(i).io.os_proc_in.valid := state === s_gq_init && alloced_gq === i.U
         gqs(i).io.os_proc_in.bits := Cat(os, proc)
+        Seq.tabulate(lq_num) { j => 
+            gqs(i).io.enqs(j).valid := false.B 
+            gqs(i).io.enqs(j).bits := 0.U
+            gqs(i).io.deqs(j).ready := false.B
+        }
     }
     private val gq_inited = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.os_proc_in.fire }.reverse)
     // 判断是否完成局部队列分配
