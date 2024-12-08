@@ -8,7 +8,7 @@ import freechips.rocketchip.subsystem._
 import freechips.rocketchip.tilelink._
 import freechips.rocketchip.util._
 import freechips.rocketchip.interrupts._
-
+import taic.utils._
 
 object TAICConsts {
   def base: BigInt = 0x1000000
@@ -62,23 +62,16 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     println(s"TAIC map ${nDevices} external interrupts:")
 
 
-    // val deqReg = Seq(0x00 -> Seq(RegField.r(ATSINTCConsts.dataWidth, queue.io.deq)))
-    // val enqRegs = Seq.tabulate(ATSINTCConsts.numPrio) { i =>
-    //   0x08 + 8 * i -> Seq(RegField.w(ATSINTCConsts.dataWidth, queue.io.enqs(i)))
-    // }
-    // val simExtIntrRegs = Seq.tabulate(nDevices) { i => 
-    //   0x200000 + 8 * i -> Seq(RegField.w(ATSINTCConsts.dataWidth, RegWriteFn { (valid, data) =>
-    //     val tmp = RegNext(valid)
-    //     queue.io.intrs(i) := valid || tmp
-    //     true.B
-    //   }))
-    // }
-    // val extintrRegs = Seq.tabulate(nDevices) { i =>
-    //   0x900 + 8 * i -> Seq(RegField.w(ATSINTCConsts.dataWidth, queue.io.intrh_enqs(i)))
-    // }
+    val controller = Module(new Controller(4, 2, 64, 64))
+    val bitallocatorRegs = Seq(
+      0x00 -> Seq(RegField.r(64, controller.io.alloced)),
+      0x08 -> Seq(RegField.w(64, controller.io.free)),
+      0x10 -> Seq(RegField.w(64, controller.io.alloc))
+    )
+
 
     // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)
-    
+    node.regmap((bitallocatorRegs): _*)
   }
 }
 

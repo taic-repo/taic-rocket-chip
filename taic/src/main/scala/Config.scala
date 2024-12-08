@@ -1,10 +1,8 @@
 package freechips.rocketchip.taic
 
 import freechips.rocketchip.config._
-import freechips.rocketchip.diplomacy._
 import freechips.rocketchip.subsystem._
 import freechips.rocketchip.system._
-import freechips.rocketchip.tile._
 import freechips.rocketchip.devices.tilelink._
 
 class WithCustomBootROM(resetAddress: BigInt, bootImgPath: String)

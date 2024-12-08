@@ -25,8 +25,8 @@ BMARKS_DIR = $(TEST_DIR)/build/share/riscv-tests/benchmarks
 CASE = ?
 ALL_BMARKS = $(wildcard $(TEST_DIR)/build/share/riscv-tests/benchmarks/*.riscv)
 
-emu = $(ROCKET_DIR)/emulator/emulator-freechips.rocketchip.system-$(CONFIG)
-emu_debug = $(ROCKET_DIR)/emulator/emulator-freechips.rocketchip.system-$(CONFIG)-debug
+emu = $(ROCKET_DIR)/emulator/emulator-$(PROJECT)-$(CONFIG)
+emu_debug = $(ROCKET_DIR)/emulator/emulator-$(PROJECT)-$(CONFIG)-debug
 
 
 test_cycles ?= 100000000
@@ -35,15 +35,15 @@ benchmarks:
 	cd $(TEST_DIR) && git submodule update --init --recursive && autoconf && ./configure --prefix=$(TEST_DIR)/build && make && make install
 
 test: benchmarks
-	make -C $(ROCKET_DIR)/emulator/ CONFIG=$(CONFIG) 
+	make -C $(ROCKET_DIR)/emulator/ PROJECT=$(PROJECT) CONFIG=$(CONFIG)
 	$(foreach case, $(ALL_BMARKS), $(emu) +max-cycles=$(test_cycles) $(case);)
 
 test_one: benchmarks
-	make -C $(ROCKET_DIR)/emulator/ CONFIG=$(CONFIG) 
+	make -C $(ROCKET_DIR)/emulator/ PROJECT=$(PROJECT) CONFIG=$(CONFIG)
 	$(emu) +max-cycles=$(test_cycles) $(BMARKS_DIR)/$(CASE).riscv
 
 debug_one: benchmarks
-	make -C $(ROCKET_DIR)/emulator/ CONFIG=$(CONFIG) debug
+	make -C $(ROCKET_DIR)/emulator/ PROJECT=$(PROJECT) CONFIG=$(CONFIG) debug
 	$(emu_debug) +max-cycles=$(test_cycles) -vdump.vcd $(BMARKS_DIR)/$(CASE).riscv
 
 -include $(ROCKET_DIR)/Makefrag
@@ -122,6 +122,5 @@ clean:
 	rm -f *.log *.jou *.str
 	make -C $(ROCKET_DIR)/emulator/ clean
 	rm -f $(ROCKET_DIR)/rocketchip.jar
-	make -C $(TEST_DIR) clean
 
 .PHONY: build clean init bootrom test test_one debug_one checkout checkin bitstream bitbin

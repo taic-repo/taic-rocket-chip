@@ -10,3 +10,6 @@ vivado_proj/proj/*
 !vivado_proj/src/hdl/system_wrapper.v
 !.keep
 .Xil
+project
+target
+*.vcd
