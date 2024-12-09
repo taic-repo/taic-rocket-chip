@@ -45,6 +45,8 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     private val state = RegInit(s_idle)
 
     private val lqmetas = Seq.fill(lq_num)(Module(new LqMeta(dataWidth, gq_cap)))
+    // 正在运行的任务标识
+    private val currs = RegInit(VecInit(Seq.fill(lq_num)(0.U(dataWidth.W))))
     private val lq_inited = Cat(Seq.tabulate(lq_num) { i => lqmetas(i).io.set_head.fire }.reverse)
 
     private val data_array = Module(new DataArray(dataWidth, gq_cap))
@@ -115,6 +117,11 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     }
 
     when(state === s_deq1 && data_array.io.deq.fire) {
+        for(i <- 0 until lq_num) {
+            when(i.U === req_deq_idx) {
+                currs(i) := data_array.io.deq.bits
+            }
+        }
         state := s_deq_done
     }
 
@@ -188,7 +195,6 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
 }
 
 // LqMeta：表示局部队列的元数据，包括以下信息：
-//      curr：正在运行的任务标识
 //      head：队头指针，实际上是队头任务在全局队列中的下标
 //      count：局部队列中的任务数量
 //
@@ -209,7 +215,6 @@ class LqMeta(val dataWidth: Int, val gq_cap: Int) extends Module {
         val deq = Flipped(Decoupled(Bool()))
         val empty = Output(Bool())
     })
-    private val curr = RegInit(0.U(dataWidth.W))
     private val head = RegInit(0.U(log2Ceil(gq_cap).W))
     private val count = RegInit(0.U(log2Ceil(gq_cap).W))
     io.empty := count === 0.U
@@ -217,7 +222,7 @@ class LqMeta(val dataWidth: Int, val gq_cap: Int) extends Module {
     io.head := head
     io.tail := (head + count) % gq_cap.U
 
-    private val s_idle :: s_set_head :: s_set_curr :: s_enq :: s_deq :: Nil = Enum(5)
+    private val s_idle :: s_set_head :: s_enq :: s_deq :: Nil = Enum(4)
     private val state = RegInit(s_idle)
 
     io.set_head.ready := state === s_idle
