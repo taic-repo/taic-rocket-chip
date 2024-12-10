@@ -14,6 +14,7 @@ class DataArray(val dataWidth: Int, val n: Int) extends Module {
         val enq = Flipped(Decoupled(UInt((dataWidth).W)))
         val deq = Decoupled(UInt((dataWidth).W))
         val count = Output(UInt(dataWidth.W))
+        val clean = Flipped(Decoupled(Bool()))
     })
 
     private val mem = RegInit(VecInit(Seq.fill(n)(0.U(dataWidth.W))))
@@ -24,8 +25,14 @@ class DataArray(val dataWidth: Int, val n: Int) extends Module {
 
     io.enq.ready := state === s_enq_done || state === s_error
     io.deq.valid := state === s_deq_done || state === s_error
+    io.clean.ready := state === s_idle
     io.deq.bits := data
     io.count := count
+
+    when(io.clean.fire) {
+        count := 0.U
+        state := s_idle
+    }
 
     // 入队
     when(state === s_idle && io.enq.valid) {

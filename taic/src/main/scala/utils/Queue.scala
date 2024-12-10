@@ -21,7 +21,7 @@ object GQError {
 //      os_proc_in：用于初始化全局队列
 //      os_proc_out：全局队列的信息
 //      lq_count：已经分配的局部队列的数量
-class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends Module {
+class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val extintr_num: Int) extends Module {
     val io = IO(new Bundle {
         val os_proc_in = Flipped(Decoupled(UInt((dataWidth * 2).W)))
         val os_proc_out = Output(UInt((dataWidth * 2).W))
@@ -33,6 +33,8 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         val deqs = Vec(lq_num, Decoupled(UInt(dataWidth.W)))
         val error = Decoupled(UInt(dataWidth.W))
         val clean = Flipped(Decoupled(Bool()))
+        val ext_intrs = Vec(extintr_num, Input(Bool()))
+        val register_ext_intr = Vec(extintr_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
     })
 
     private val lq_allocator = Module(new BitAllocator(lq_num))
@@ -43,7 +45,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
 
     io.os_proc_out := Cat(os, proc)
 
-    private val s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq :: s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 :: s_deq_done :: s_clean :: s_error :: Nil = Enum(13)
+    private val s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq :: s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 :: s_deq_done :: s_clean :: s_reg_extintr :: s_extintr0 :: s_extintr1 :: s_error :: Nil = Enum(16)
     private val state = RegInit(s_idle)
 
     private val lqmetas = Seq.fill(lq_num)(Module(new LqMeta(dataWidth, gq_cap)))
@@ -67,7 +69,6 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     // 当 valid 信号为 1 时，表示有任务入队
     private val has_enq = Cat(Seq.tabulate(lq_num) { i => io.enqs(i).valid }.reverse)
     private val enq_idx = RegInit(0.U(dataWidth.W))
-    private val enq_dones = Cat(Seq.tabulate(lq_num) { i => io.enqs(i).fire }.reverse)
 
     // 当 ready 信号为 1 时，表示有任务出队
     private val has_deq = Cat(Seq.tabulate(lq_num) { i => io.deqs(i).ready }.reverse)
@@ -136,8 +137,10 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         state := s_idle
     }
 
+    private val is_extr_waked = RegInit(false.B)
     when(state === s_idle && has_enq =/= 0.U) {
         enq_idx := PriorityEncoder(has_enq)
+        is_extr_waked := false.B
         when(task_count === gq_cap.U) {
             error_code := error_code | GQError.queue_full.U       // 队列已满错误
             state := s_error
@@ -159,11 +162,10 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     when(state === s_error) {
         state := s_idle
     }
-
     when(state === s_enq0) {
         for(i <- 0 until lq_num) {
             when(i.U === enq_idx) {
-                enq_data := io.enqs(i).bits
+                enq_data := Mux(is_extr_waked, enq_data, io.enqs(i).bits)
                 data_array_idx := lqmetas(i).io.tail
             }
         }
@@ -174,7 +176,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         state := s_enq_done
     }
 
-    when(state === s_enq_done && enq_dones =/= 0.U) {
+    when(state === s_enq_done) {
         state := s_idle
     }
     
@@ -209,12 +211,79 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
             currs(i) := 0.U
         }
         error_code := 0.U
+        // 清除 lqmetas 中的 count，将所有的局部队列清空
         state := s_clean
     }
+    for (i <- 0 until lq_num) {
+        lqmetas(i).io.clean.valid := ((state === s_idle) || (state === s_free_lq)) && io.clean.fire
+        lqmetas(i).io.clean.bits := false.B
+    }
+    data_array.io.clean.valid := ((state === s_idle) || (state === s_free_lq)) && io.clean.fire
+    data_array.io.clean.bits := false.B
     when(state === s_clean) {
         state := s_idle
     }
 
+    // 外部中断相关的逻辑
+    private val ext_intr_slots = Module(new ExtIntrSlots(extintr_num, dataWidth))
+    private val extintr_arbs = Seq.fill(extintr_num)(Module(new Arbiter(UInt(dataWidth.W), lq_num)))
+    for (i <- 0 until extintr_num) {
+        for (j <- 0 until lq_num) {
+            extintr_arbs(i).io.in(j).valid := io.register_ext_intr(j * lq_num + i).valid
+            extintr_arbs(i).io.in(j).bits := io.register_ext_intr(j * lq_num + i).bits
+        }
+        extintr_arbs(i).io.out <> ext_intr_slots.io.register(i)
+    }
+    Seq.tabulate(lq_num * extintr_num) { i =>
+        io.register_ext_intr(i).ready := state === s_idle
+    }
+    private val has_register_extintr = Cat(Seq.tabulate(extintr_num * lq_num) { i => io.register_ext_intr(i).valid }.reverse)
+    // private val regester_extintr_done = Cat(Seq.tabulate(extintr_num) { i => ext_intr_slots.io.register(i).fire }.reverse)
+    when(state === s_idle && has_register_extintr =/= 0.U) {
+        state := s_reg_extintr
+    }
+    when(state === s_reg_extintr) {
+        state := s_idle
+    }
+
+    private val has_ext_intrs = Cat(Seq.tabulate(extintr_num) { i => io.ext_intrs(i) }.reverse)
+    private val last_has_ext_intrs = RegNext(has_ext_intrs)
+    // extintr_bits 用于记录需要处理的中断，只会在第一次产生中断时触发，变为 true
+    private val extintr_bits = RegInit(0.U(extintr_num.W))
+    private val ext_intr_idx = PriorityEncoder(Cat(0.U, extintr_bits))
+    // 在中断信号的上升沿更新
+    when(has_ext_intrs > last_has_ext_intrs) {
+        extintr_bits := extintr_bits | (has_ext_intrs ^ last_has_ext_intrs)
+    }
+    
+    // 外部中断处理逻辑，找到对应的中断源以及处理任务
+    when(state === s_idle && extintr_bits =/= 0.U) {
+        state := s_extintr0
+    }
+    for (i <- 0 until extintr_num) {
+        ext_intr_slots.io.wake_handler(i).ready := state === s_extintr0 && i.U === ext_intr_idx
+    }
+    when(state === s_extintr0) {
+        // 始终将外部中断的处理任务放在第一个局部队列中
+        enq_idx := 0.U
+        is_extr_waked := true.B
+        for (i <- 0 until extintr_num) {
+            when(i.U === ext_intr_idx) {
+                enq_data := ext_intr_slots.io.wake_handler(i).bits
+                // 清除对应的位
+                extintr_bits := extintr_bits & ~(1.U << i.U)
+            }
+        }
+        state := s_extintr1
+    }
+    when(state === s_extintr1) {
+        when(enq_data =/= 0.U) {
+            state := s_enq0
+        }.otherwise {
+            state := s_idle
+        }
+    }
+    
 }
 
 // LqMeta：表示局部队列的元数据，包括以下信息：
@@ -237,6 +306,7 @@ class LqMeta(val dataWidth: Int, val gq_cap: Int) extends Module {
         val enq = Flipped(Decoupled(Bool()))
         val deq = Flipped(Decoupled(Bool()))
         val empty = Output(Bool())
+        val clean = Flipped(Decoupled(Bool()))
     })
     private val head = RegInit(0.U(log2Ceil(gq_cap).W))
     private val count = RegInit(0.U(log2Ceil(gq_cap).W))
@@ -261,6 +331,12 @@ class LqMeta(val dataWidth: Int, val gq_cap: Int) extends Module {
 
     io.enq.ready := state === s_idle
     io.deq.ready := state === s_idle
+    io.clean.ready := state === s_idle
+    when(state === s_idle && io.clean.fire) {
+        count := 0.U
+        head := 0.U
+    }
+
     when(state === s_idle && io.enq.fire) {
         count := Mux(count === gq_cap.U, count, count + 1.U)
         state := s_enq

@@ -5,7 +5,7 @@ import chisel3.util._
 
 // Controller: 控制器，用于分配队列资源，以及队列操作
 // 
-class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidth: Int) extends Module {
+class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidth: Int, val extintr_num: Int) extends Module {
     val io = IO(new Bundle {
         /************** 全局的接口 ******************/
         // 用于分配一个局部队列，写接口
@@ -20,6 +20,8 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         val enqs = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
         val deqs = Vec(gq_num * lq_num, Decoupled(UInt(dataWidth.W)))
         val errors = Vec(gq_num, Decoupled(UInt(dataWidth.W)))
+        val ext_intrs = Vec(extintr_num, Input(Bool()))
+        val register_ext_intr = Vec(extintr_num * gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
     })
 
     // 申请时需要记录的信息
@@ -29,7 +31,7 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     private val gq_allocator = Module(new BitAllocator(gq_num))
     private val alloced_gq = RegInit(0.U(log2Ceil(gq_num).W))
     // 这里的 gqs 还需要完善 GlobalQueue 的实现
-    private val gqs = Seq.fill(gq_num)(Module(new GlobalQueue(dataWidth, lq_num, gq_cap)))
+    private val gqs = Seq.fill(gq_num)(Module(new GlobalQueue(dataWidth, lq_num, gq_cap, extintr_num)))
 
     private val s_idle :: s_wos :: s_wproc :: s_find :: s_alloc_gq :: s_gq_init :: s_alloc_lq :: s_ridx :: s_free_lq :: s_free_gq :: s_error :: Nil = Enum(11)
 
@@ -60,6 +62,12 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
             io.deqs(i * lq_num + j) <> gqs(i).io.deqs(j)
         }
         io.errors(i) <> gqs(i).io.error
+        Seq.tabulate(extintr_num) { j =>
+            gqs(i).io.ext_intrs(j) := io.ext_intrs(j)
+        }
+        Seq.tabulate(extintr_num * lq_num) { j =>
+            io.register_ext_intr(i * extintr_num * lq_num + j) <> gqs(i).io.register_ext_intr(j)
+        }
     }
     private val gq_inited = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.os_proc_in.fire }.reverse)
     // 判断是否完成局部队列分配
