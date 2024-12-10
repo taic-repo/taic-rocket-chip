@@ -13,7 +13,12 @@ import taic.utils._
 object TAICConsts {
   def base: BigInt = 0x1000000
   def size = 0x1000000
-  
+  def gq_num = 4
+  def lq_num = 2
+  def gq_cap = 4
+  def dataWidth = 64
+  def lq_base = 0x1000
+  def lq_size = 0x1000
 }
 
 case class TAICParams(baseAddress: BigInt = TAICConsts.base, intStages: Int = 0) {
@@ -62,26 +67,34 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     println(s"TAIC map ${nDevices} external interrupts:")
 
 
-    // val controller = Module(new Controller(4, 2, 64, 64))
-    // val bitallocatorRegs = Seq(
-    //   0x00 -> Seq(RegField.r(64, controller.io.alloced)),
-    //   0x08 -> Seq(RegField.w(64, controller.io.free)),
-    //   0x10 -> Seq(RegField.w(64, controller.io.alloc))
-    // )
-    val queue = Module(new GlobalQueue(64, 2, 4))
+    val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth))
     val bitallocatorRegs = Seq(
-      0x00 -> Seq(RegField.r(64, queue.io.alloc_lq)),
-      0x08 -> Seq(RegField.w(64, queue.io.free_lq)),
+      0x00 -> Seq(RegField(64, controller.io.alloced, controller.io.alloc)),
+      0x08 -> Seq(RegField.w(64, controller.io.free)),
     )
-    val enqRegs = Seq.tabulate(2) { i =>
-      0x10 + 8 * i -> Seq(RegField.w(64, queue.io.enqs(i)))
+    val enqRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size -> Seq(RegField.w(64, controller.io.enqs(i)))
     }
-    val deqRegs = Seq.tabulate(2) { i =>
-      0x20 + 8 * i -> Seq(RegField.r(64, queue.io.deqs(i)))
+    val deqRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x08 -> Seq(RegField.r(64, controller.io.deqs(i)))
     }
-    val errRegs = Seq(
-      0x30 -> Seq(RegField.r(64, queue.io.error))
-    )
+    val errRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x10 -> Seq(RegField.r(64, controller.io.errors(i / TAICConsts.lq_num)))
+    }
+    // val queue = Module(new GlobalQueue(64, 2, 4))
+    // val bitallocatorRegs = Seq(
+    //   0x00 -> Seq(RegField.r(64, queue.io.alloc_lq)),
+    //   0x08 -> Seq(RegField.w(64, queue.io.free_lq)),
+    // )
+    // val enqRegs = Seq.tabulate(2) { i =>
+    //   0x10 + 8 * i -> Seq(RegField.w(64, queue.io.enqs(i)))
+    // }
+    // val deqRegs = Seq.tabulate(2) { i =>
+    //   0x20 + 8 * i -> Seq(RegField.r(64, queue.io.deqs(i)))
+    // }
+    // val errRegs = Seq(
+    //   0x30 -> Seq(RegField.r(64, queue.io.error))
+    // )
 
 
     // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)

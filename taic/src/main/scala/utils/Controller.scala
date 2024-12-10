@@ -17,6 +17,9 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         /*******************************************/
 
         /************** 局部的接口 ******************/
+        val enqs = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val deqs = Vec(gq_num * lq_num, Decoupled(UInt(dataWidth.W)))
+        val errors = Vec(gq_num, Decoupled(UInt(dataWidth.W)))
     })
 
     // 申请时需要记录的信息
@@ -53,10 +56,10 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         gqs(i).io.os_proc_in.valid := state === s_gq_init && alloced_gq === i.U
         gqs(i).io.os_proc_in.bits := Cat(os, proc)
         Seq.tabulate(lq_num) { j => 
-            gqs(i).io.enqs(j).valid := false.B 
-            gqs(i).io.enqs(j).bits := 0.U
-            gqs(i).io.deqs(j).ready := false.B
+            io.enqs(i * lq_num + j) <> gqs(i).io.enqs(j)
+            io.deqs(i * lq_num + j) <> gqs(i).io.deqs(j)
         }
+        io.errors(i) <> gqs(i).io.error
     }
     private val gq_inited = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.os_proc_in.fire }.reverse)
     // 判断是否完成局部队列分配
@@ -130,11 +133,16 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         gqs(i).io.free_lq.valid := state === s_free_lq && free_gq_idx === i.U
         gqs(i).io.free_lq.bits := free_lq_idx
     }
-    private val lq_freed = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.free_lq.fire })
-    private val gq_empty = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.lq_count === 0.U })
+    private val lq_freed = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.free_lq.fire }.reverse)
+    private val gq_empty = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.lq_count === 0.U }.reverse)
     private val last_gq_empty = RegNext(gq_empty)
     gq_allocator.io.free.bits := free_gq_idx
     gq_allocator.io.free.valid := state === s_free_gq && ((last_gq_empty ^ gq_empty) =/= 0.U)
+    private val clean_gq_idx = PriorityEncoder(Cat(0.U, (last_gq_empty ^ gq_empty)(gq_num - 1, 0)))
+    Seq.tabulate(gq_num) { i =>
+        gqs(i).io.clean.valid := state === s_free_gq && clean_gq_idx === i.U
+        gqs(i).io.clean.bits := false.B
+    }
 
     when(state === s_free_lq && lq_freed =/= 0.U) {
         state := s_free_gq

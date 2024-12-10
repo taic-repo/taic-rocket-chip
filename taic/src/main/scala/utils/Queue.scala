@@ -5,8 +5,9 @@ import chisel3.util._
 
 object GQError {
   def queue_full: Int = 1
-  def no_send_perm: Int = 2
-  def no_recv_perm: Int = 4
+  def not_init: Int = 2
+  def no_send_perm: Int = 4
+  def no_recv_perm: Int = 8
   
 }
 
@@ -31,6 +32,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         val enqs = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
         val deqs = Vec(lq_num, Decoupled(UInt(dataWidth.W)))
         val error = Decoupled(UInt(dataWidth.W))
+        val clean = Flipped(Decoupled(Bool()))
     })
 
     private val lq_allocator = Module(new BitAllocator(lq_num))
@@ -41,7 +43,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
 
     io.os_proc_out := Cat(os, proc)
 
-    private val s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq :: s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 :: s_deq_done :: s_error :: Nil = Enum(12)
+    private val s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq :: s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 :: s_deq_done :: s_clean :: s_error :: Nil = Enum(13)
     private val state = RegInit(s_idle)
 
     private val lqmetas = Seq.fill(lq_num)(Module(new LqMeta(dataWidth, gq_cap)))
@@ -81,9 +83,9 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     for (i <- 0 until lq_num) {
         lqmetas(i).io.deq.bits := false.B
         lqmetas(i).io.enq.bits := false.B
-        io.enqs(i).ready := state === s_enq_done && enq_idx === i.U
-        io.deqs(i).valid := state === s_deq_done && req_deq_idx === i.U
-        io.deqs(i).bits := data_array.io.deq.bits
+        io.enqs(i).ready := (state === s_enq_done && enq_idx === i.U) || state === s_error
+        io.deqs(i).valid := (state === s_deq_done && req_deq_idx === i.U) || state === s_error
+        io.deqs(i).bits := Mux(state === s_error, 0.U, data_array.io.deq.bits)
         lqmetas(i).io.enq.valid := state === s_enq0 && enq_idx === i.U
         lqmetas(i).io.deq.valid := state === s_deq0 && deq_idx === i.U
         lqmetas(i).io.set_head.valid := Mux(state === s_lq_init && lq_allocator.io.alloc.bits === i.U, true.B, (state === s_enq0 && enq_idx < i.U) || (state === s_deq0 && deq_idx < i.U))
@@ -104,7 +106,12 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
     when(state === s_idle && has_deq =/= 0.U) {
         req_deq_idx := PriorityEncoder(has_deq)
         deq_idx := PriorityEncoder(Mux((has_deq & lq_not_emptys) =/= 0.U, has_deq, lq_not_emptys))
-        state := s_deq0
+        when(os === 0.U && proc === 0.U) {
+            error_code := error_code | GQError.not_init.U     // 队列没有初始化，即错误使用资源
+            state := s_error
+        }.otherwise {
+            state := s_deq0
+        }
     }
 
     when(state === s_deq0) {
@@ -133,6 +140,9 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         enq_idx := PriorityEncoder(has_enq)
         when(task_count === gq_cap.U) {
             error_code := error_code | GQError.queue_full.U       // 队列已满错误
+            state := s_error
+        }.elsewhen(os === 0.U && proc === 0.U) {
+            error_code := error_code | GQError.not_init.U     // 队列没有初始化，即错误使用资源
             state := s_error
         }.otherwise {
             state := s_enq0
@@ -189,6 +199,19 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int) extends 
         state := s_free_lq
     }
     when(state === s_free_lq) {
+        state := s_idle
+    }
+    io.clean.ready := (state === s_idle) || (state === s_free_lq)
+    when(((state === s_idle) || (state === s_free_lq)) && io.clean.fire) {
+        os := 0.U
+        proc := 0.U
+        Seq.tabulate(lq_num) { i =>
+            currs(i) := 0.U
+        }
+        error_code := 0.U
+        state := s_clean
+    }
+    when(state === s_clean) {
         state := s_idle
     }
 
