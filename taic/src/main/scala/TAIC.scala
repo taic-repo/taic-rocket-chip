@@ -62,12 +62,16 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     Annotated.params(this, params)
 
     // Compact the interrupt vector the same way
-    // val interrupts = intnode.in.map { case (i, e) => i.take(e.source.num) }.flatten
+    val interrupts = intnode.in.map { case (i, e) => i.take(e.source.num) }.flatten
     
     println(s"TAIC map ${nDevices} external interrupts:")
 
 
-    val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth))
+    val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth, nDevices))
+    val simExtIntr = Seq.fill(nDevices)(RegInit(false.B))
+    Seq.tabulate(nDevices) { i =>
+      controller.io.ext_intrs(i) := Mux(interrupts(i), interrupts(i), simExtIntr(i))
+    }
     val bitallocatorRegs = Seq(
       0x00 -> Seq(RegField(64, controller.io.alloced, controller.io.alloc)),
       0x08 -> Seq(RegField.w(64, controller.io.free)),
@@ -80,6 +84,17 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     }
     val errRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
       TAICConsts.lq_base + i * TAICConsts.lq_size + 0x10 -> Seq(RegField.r(64, controller.io.errors(i / TAICConsts.lq_num)))
+    }
+    val extintrRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      Seq.tabulate(nDevices) { j =>
+        TAICConsts.lq_base + i * TAICConsts.lq_size + 0x18 + 8 * j -> Seq(RegField.w(64, controller.io.register_ext_intr(i * nDevices + j)))
+      }
+    }.flatten
+    val simExtIntrRegs = Seq.tabulate(nDevices) { i =>
+      0x10 + 0x08 * i -> Seq(RegField.w(64, RegWriteFn { (valid, data) =>
+        simExtIntr(i) := valid
+        true.B
+      }))
     }
     // val queue = Module(new GlobalQueue(64, 2, 4))
     // val bitallocatorRegs = Seq(
@@ -99,7 +114,7 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
 
     // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)
     // node.regmap((bitallocatorRegs): _*)
-    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs): _*)
+    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs ++ extintrRegs ++ simExtIntrRegs): _*)
 
   }
 }
