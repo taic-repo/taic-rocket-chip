@@ -246,18 +246,18 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         state := s_idle
     }
 
-    private val has_ext_intrs = Cat(Seq.tabulate(extintr_num) { i => io.ext_intrs(i) }.reverse)
-    private val last_has_ext_intrs = RegNext(has_ext_intrs)
     // extintr_bits 用于记录需要处理的中断，只会在第一次产生中断时触发，变为 true
-    private val extintr_bits = RegInit(0.U(extintr_num.W))
-    private val ext_intr_idx = PriorityEncoder(Cat(0.U, extintr_bits))
+    private val extintr_bits = RegInit(VecInit(Seq.fill(extintr_num + 1)(false.B)))
+    private val ext_intr_idx = PriorityEncoder(extintr_bits)
     // 在中断信号的上升沿更新
-    when(has_ext_intrs > last_has_ext_intrs) {
-        extintr_bits := extintr_bits | (has_ext_intrs ^ last_has_ext_intrs)
+    for (i <- 0 until extintr_num) {
+        when(io.ext_intrs(i) && !RegNext(io.ext_intrs(i))) {
+            extintr_bits(i) := true.B
+        }
     }
-    
+
     // 外部中断处理逻辑，找到对应的中断源以及处理任务
-    when(state === s_idle && extintr_bits =/= 0.U) {
+    when(state === s_idle && ext_intr_idx =/= extintr_num.U) {
         state := s_extintr0
     }
     for (i <- 0 until extintr_num) {
@@ -271,7 +271,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
             when(i.U === ext_intr_idx) {
                 enq_data := ext_intr_slots.io.wake_handler(i).bits
                 // 清除对应的位
-                extintr_bits := extintr_bits & ~(1.U << i.U)
+                extintr_bits(i) := false.B
             }
         }
         state := s_extintr1
