@@ -19,6 +19,7 @@ object TAICConsts {
   def dataWidth = 64
   def lq_base = 0x1000
   def lq_size = 0x1000
+  def softintr_num = 6
 }
 
 case class TAICParams(baseAddress: BigInt = TAICConsts.base, intStages: Int = 0) {
@@ -67,7 +68,7 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     println(s"TAIC map ${nDevices} external interrupts:")
 
 
-    val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth, nDevices))
+    val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth, nDevices, TAICConsts.softintr_num))
     val simExtIntr = Seq.fill(nDevices)(RegInit(false.B))
     Seq.tabulate(nDevices) { i =>
       controller.io.ext_intrs(i) := Mux(interrupts(i), interrupts(i), simExtIntr(i))
@@ -85,9 +86,21 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     val errRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
       TAICConsts.lq_base + i * TAICConsts.lq_size + 0x10 -> Seq(RegField.r(64, controller.io.errors(i / TAICConsts.lq_num)))
     }
+    val senderRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x18 -> Seq(RegField.w(64, controller.io.register_sender(i)))
+    }
+    val cancelRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x20 -> Seq(RegField.w(64, controller.io.cancel_sender(i)))
+    }
+    val receiverRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x28 -> Seq(RegField.w(64, controller.io.register_receiver(i)))
+    }
+    val sendIntrRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x30 -> Seq(RegField.w(64, controller.io.send_intr(i)))
+    }
     val extintrRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
       Seq.tabulate(nDevices) { j =>
-        TAICConsts.lq_base + i * TAICConsts.lq_size + 0x18 + 8 * j -> Seq(RegField.w(64, controller.io.register_ext_intr(i * nDevices + j)))
+        TAICConsts.lq_base + i * TAICConsts.lq_size + 0x38 + 8 * j -> Seq(RegField.w(64, controller.io.register_ext_intr(i * nDevices + j)))
       }
     }.flatten
     val simExtIntrRegs = Seq.tabulate(nDevices) { i =>
@@ -114,7 +127,7 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
 
     // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)
     // node.regmap((bitallocatorRegs): _*)
-    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs ++ extintrRegs ++ simExtIntrRegs): _*)
+    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs ++ senderRegs ++ cancelRegs ++ receiverRegs ++ sendIntrRegs ++ extintrRegs ++ simExtIntrRegs): _*)
 
   }
 }

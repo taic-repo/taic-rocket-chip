@@ -21,7 +21,7 @@ object GQError {
 //      os_proc_in：用于初始化全局队列
 //      os_proc_out：全局队列的信息
 //      lq_count：已经分配的局部队列的数量
-class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val extintr_num: Int) extends Module {
+class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val extintr_num: Int, val softintr_num: Int) extends Module {
     val io = IO(new Bundle {
         val os_proc_in = Flipped(Decoupled(UInt((dataWidth * 2).W)))
         val os_proc_out = Output(UInt((dataWidth * 2).W))
@@ -35,6 +35,15 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         val clean = Flipped(Decoupled(Bool()))
         val ext_intrs = Vec(extintr_num, Input(Bool()))
         val register_ext_intr = Vec(extintr_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val register_sender = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val cancel_sender = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val register_receiver = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        // 发送中断的 MMIO 接口
+        val send_intr = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        // 暴露给控制器的接口
+        val send_intr_out = Decoupled(UInt((dataWidth * 4).W))
+        // 暴露给控制器的接收中断的接口
+        val recv_intr = Flipped(Decoupled(UInt((dataWidth * 2).W)))
     })
 
     private val lq_allocator = Module(new BitAllocator(lq_num))
@@ -45,7 +54,15 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
 
     io.os_proc_out := Cat(os, proc)
 
-    private val s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq :: s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 :: s_deq_done :: s_clean :: s_reg_extintr :: s_extintr0 :: s_extintr1 :: s_error :: Nil = Enum(16)
+    private val (
+        s_idle :: s_init :: s_lq_init :: s_alloc_lq :: s_free_lq ::
+        s_enq0 :: s_enq1 :: s_enq_done :: s_deq0 :: s_deq1 ::
+        s_deq_done :: s_clean :: s_extintr0 :: s_extintr1 ::
+        s_recv_intr0 :: s_recv_intr1 ::
+        s_error :: Nil
+    ) = Enum(17)
+
+
     private val state = RegInit(s_idle)
 
     private val lqmetas = Seq.fill(lq_num)(Module(new LqMeta(dataWidth, gq_cap)))
@@ -137,10 +154,10 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         state := s_idle
     }
 
-    private val is_extr_waked = RegInit(false.B)
+    private val is_waked = RegInit(false.B)
     when(state === s_idle && has_enq =/= 0.U) {
         enq_idx := PriorityEncoder(has_enq)
-        is_extr_waked := false.B
+        is_waked := false.B
         when(task_count === gq_cap.U) {
             error_code := error_code | GQError.queue_full.U       // 队列已满错误
             state := s_error
@@ -165,7 +182,8 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
     when(state === s_enq0) {
         for(i <- 0 until lq_num) {
             when(i.U === enq_idx) {
-                enq_data := Mux(is_extr_waked, enq_data, io.enqs(i).bits)
+                enq_data := Mux(is_waked, enq_data, io.enqs(i).bits)
+                // TODO：增加判断逻辑，是否需要将其放入队头，以及是否需要发送中断信号给 CPU
                 data_array_idx := lqmetas(i).io.tail
             }
         }
@@ -225,7 +243,14 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
     }
 
     // 外部中断相关的逻辑
+    private val sext_idle :: sext_reg_extintr :: Nil = Enum(2)
+    private val sext_state = RegInit(sext_idle)
+
     private val ext_intr_slots = Module(new ExtIntrSlots(extintr_num, dataWidth))
+
+    ext_intr_slots.io.clean.valid := ((state === s_idle) || (state === s_free_lq)) && io.clean.fire
+    ext_intr_slots.io.clean.bits := false.B
+
     private val extintr_arbs = Seq.fill(extintr_num)(Module(new Arbiter(UInt(dataWidth.W), lq_num)))
     for (i <- 0 until extintr_num) {
         for (j <- 0 until lq_num) {
@@ -235,15 +260,15 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         extintr_arbs(i).io.out <> ext_intr_slots.io.register(i)
     }
     Seq.tabulate(lq_num * extintr_num) { i =>
-        io.register_ext_intr(i).ready := state === s_idle
+        io.register_ext_intr(i).ready := (sext_state === sext_idle) && (state =/= s_clean)
     }
     private val has_register_extintr = Cat(Seq.tabulate(extintr_num * lq_num) { i => io.register_ext_intr(i).valid }.reverse)
     // private val regester_extintr_done = Cat(Seq.tabulate(extintr_num) { i => ext_intr_slots.io.register(i).fire }.reverse)
-    when(state === s_idle && has_register_extintr =/= 0.U) {
-        state := s_reg_extintr
+    when((sext_state === sext_idle) && (state =/= s_clean) && has_register_extintr =/= 0.U) {
+        sext_state := sext_reg_extintr
     }
-    when(state === s_reg_extintr) {
-        state := s_idle
+    when(sext_state === sext_reg_extintr) {
+        sext_state := sext_idle
     }
 
     // extintr_bits 用于记录需要处理的中断，只会在第一次产生中断时触发，变为 true
@@ -266,7 +291,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
     when(state === s_extintr0) {
         // 始终将外部中断的处理任务放在第一个局部队列中
         enq_idx := 0.U
-        is_extr_waked := true.B
+        is_waked := true.B
         for (i <- 0 until extintr_num) {
             when(i.U === ext_intr_idx) {
                 enq_data := ext_intr_slots.io.wake_handler(i).bits
@@ -283,7 +308,144 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
             state := s_idle
         }
     }
+
+    // 软件中断相关逻辑
+    private val (
+        sint_idle :: sint_reg_send0 :: sint_reg_send1 :: 
+        sint_reg_recv0 :: sint_reg_recv1 :: sint_reg_recv2 :: 
+        sint_cancel_send0 :: sint_cancel_send1 ::
+        sint_sendintr0 :: sint_sendintr1 :: Nil
+    ) = Enum(10)
+    private val softintr_state = RegInit(sint_idle)
+
+    private val softintr_slots = Module(new SoftIntrSlots(softintr_num, dataWidth))
+    softintr_slots.io.clean.valid := ((state === s_idle) || (state === s_free_lq)) && io.clean.fire
+    softintr_slots.io.clean.bits := false.B
+    private val register_sender_arb = Module(new Arbiter(UInt(dataWidth.W), lq_num))
+    private val cancel_sender_arb = Module(new Arbiter(UInt(dataWidth.W), lq_num))
+    private val register_receiver_arb = Module(new Arbiter(UInt(dataWidth.W), lq_num))
+    for (i <- 0 until lq_num) {
+        register_sender_arb.io.in(i).valid := io.register_sender(i).valid
+        register_sender_arb.io.in(i).bits := io.register_sender(i).bits
+        cancel_sender_arb.io.in(i).valid := io.cancel_sender(i).valid
+        cancel_sender_arb.io.in(i).bits := io.cancel_sender(i).bits
+        register_receiver_arb.io.in(i).valid := io.register_receiver(i).valid
+        register_receiver_arb.io.in(i).bits := io.register_receiver(i).bits
+
+        io.register_sender(i).ready := softintr_state === sint_idle || softintr_state === sint_reg_send0
+        io.cancel_sender(i).ready := softintr_state === sint_idle || softintr_state === sint_cancel_send0
+        io.register_receiver(i).ready := softintr_state === sint_idle || softintr_state === sint_reg_recv0 || softintr_state === sint_reg_recv1
+    }
+    register_sender_arb.io.out <> softintr_slots.io.register_sender
+    cancel_sender_arb.io.out <> softintr_slots.io.cancel_sender
+    register_receiver_arb.io.out <> softintr_slots.io.register_receiver
+    // 注册相关逻辑
+    private val has_register_sender = Cat(Seq.tabulate(lq_num) { i => io.register_sender(i).valid }.reverse)
+    private val has_cancel_sender = Cat(Seq.tabulate(lq_num) { i => io.cancel_sender(i).valid }.reverse)
+    private val has_register_receiver = Cat(Seq.tabulate(lq_num) { i => io.register_receiver(i).valid }.reverse)
+    when(softintr_state === sint_idle && has_register_sender =/= 0.U && register_sender_arb.io.out.fire) {
+        softintr_state := sint_reg_send0
+    }
+    when(softintr_state === sint_reg_send0 && has_register_sender =/= 0.U && register_sender_arb.io.out.fire) {
+        softintr_state := sint_reg_send1
+    }
+    when(softintr_state === sint_reg_send1) {
+        softintr_state := sint_idle
+    }
+
+    when(softintr_state === sint_idle && has_cancel_sender =/= 0.U && cancel_sender_arb.io.out.fire) {
+        softintr_state := sint_cancel_send0
+    }
+    when(softintr_state === sint_cancel_send0 && has_cancel_sender =/= 0.U && cancel_sender_arb.io.out.fire) {
+        softintr_state := sint_cancel_send1
+    }
+    when(softintr_state === sint_cancel_send1) {
+        softintr_state := sint_idle
+    }
+
+    when(softintr_state === sint_idle && has_register_receiver =/= 0.U && register_receiver_arb.io.out.fire) {
+        softintr_state := sint_reg_recv0
+    }
+    when(softintr_state === sint_reg_recv0 && has_register_receiver =/= 0.U && register_receiver_arb.io.out.fire) {
+        softintr_state := sint_reg_recv1
+    }
+    when(softintr_state === sint_reg_recv1 && has_register_receiver =/= 0.U && register_receiver_arb.io.out.fire) {
+        softintr_state := sint_reg_recv2
+    }
+    when(softintr_state === sint_reg_recv2) {
+        softintr_state := sint_idle
+    }
+
+    // 发送中断的逻辑
+    private val send_intr_arb = Module(new Arbiter(UInt(dataWidth.W), lq_num))
+    for (i <- 0 until lq_num) {
+        send_intr_arb.io.in(i).valid := io.send_intr(i).valid
+        send_intr_arb.io.in(i).bits := io.send_intr(i).bits
+        io.send_intr(i).ready := softintr_state === sint_idle || softintr_state === sint_sendintr0
+        dontTouch(io.send_intr(i))
+    }
+    private val send_intr_bits = dontTouch(RegNext(send_intr_arb.io.out.bits))
+    send_intr_arb.io.out.ready := softintr_state === sint_idle
+    private val send_intr_arb_bits = dontTouch(send_intr_arb.io.out.bits)
+    private val recv_os = dontTouch(RegInit(0.U(dataWidth.W)))
+    private val recv_proc = dontTouch(RegInit(0.U(dataWidth.W)))
+    private val has_send_intr = Cat(Seq.tabulate(lq_num) { i => io.send_intr(i).fire }.reverse)
+    when(softintr_state === sint_idle && has_send_intr =/= 0.U) {
+        recv_os := send_intr_arb_bits
+        softintr_state := sint_sendintr0
+    }
+    when(softintr_state === sint_sendintr0 && has_send_intr =/= 0.U) {
+        recv_proc := send_intr_arb_bits
+        softintr_state := sint_sendintr1
+    }
+    private val recv_os_proc_matches = Cat(Seq.tabulate(lq_num) { i => softintr_slots.io.can_send(i) === Cat(recv_os, recv_proc) }.reverse)
+    io.send_intr_out.bits := Cat(recv_os, recv_proc, os, proc)
+    private val send_ok = RegInit(false.B)
+    io.send_intr_out.valid := send_ok
+    // 在匹配成功后，拉起 send_ok，表示可以发送中断；当控制器接收到信号后，清除 send_ok
+    send_ok := Mux(softintr_state === sint_sendintr1 && recv_os_proc_matches =/= 0.U, true.B, Mux(io.send_intr_out.fire, false.B, send_ok))
+    when(softintr_state === sint_sendintr1) {
+        when(recv_os_proc_matches === 0.U) {
+            error_code := error_code | GQError.no_send_perm.U
+        }
+        softintr_state := sint_idle
+    }
+
+    // 接收软件中断的逻辑
+    // 只能在处于 idle 的情况下接收软件中断
+    io.recv_intr.ready := state === s_idle
     
+    private val send_os_proc = RegInit(0.U((dataWidth * 2).W))
+    when(state === s_idle && io.recv_intr.fire) {
+        send_os_proc := io.recv_intr.bits
+        state := s_recv_intr0
+    }
+    private val send_os_proc_matches = Cat(Seq.tabulate(lq_num) { i => softintr_slots.io.can_recv(i) === send_os_proc }.reverse)
+    private val handler_idx = PriorityEncoder(Cat(0.U, send_os_proc_matches))
+    for(i <- 0 until softintr_num) {
+        softintr_slots.io.wake_handler(i).ready := state === s_recv_intr0 && i.U === handler_idx
+    }
+    when(state === s_recv_intr0) {
+        // 始终将软件中断的处理任务放在第一个局部队列中
+        enq_idx := 0.U
+        is_waked := true.B
+        for (i <- 0 until softintr_num) {
+            when(i.U === handler_idx) {
+                enq_data := softintr_slots.io.wake_handler(i).bits
+            }
+        }
+        state := s_recv_intr1     
+    }
+    when(state === s_recv_intr1) {
+        when(handler_idx =/= softintr_num.U && enq_data =/= 0.U) {
+            send_os_proc := 0.U
+            state := s_enq0
+        }.otherwise {
+            send_os_proc := 0.U
+            error_code := error_code | GQError.no_recv_perm.U
+            state := s_error
+        }
+    }
 }
 
 // LqMeta：表示局部队列的元数据，包括以下信息：

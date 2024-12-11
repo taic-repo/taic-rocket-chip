@@ -5,7 +5,7 @@ import chisel3.util._
 
 // Controller: 控制器，用于分配队列资源，以及队列操作
 // 
-class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidth: Int, val extintr_num: Int) extends Module {
+class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidth: Int, val extintr_num: Int, val softintr_num: Int) extends Module {
     val io = IO(new Bundle {
         /************** 全局的接口 ******************/
         // 用于分配一个局部队列，写接口
@@ -22,6 +22,15 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         val errors = Vec(gq_num, Decoupled(UInt(dataWidth.W)))
         val ext_intrs = Vec(extintr_num, Input(Bool()))
         val register_ext_intr = Vec(extintr_num * gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        /*******************************************/
+
+        /************** 与软件中断相关的接口 ******************/
+        val register_sender = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val cancel_sender = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val register_receiver = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        // MMIO 接口
+        val send_intr = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+
     })
 
     // 申请时需要记录的信息
@@ -30,10 +39,15 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
 
     private val gq_allocator = Module(new BitAllocator(gq_num))
     private val alloced_gq = RegInit(0.U(log2Ceil(gq_num).W))
-    // 这里的 gqs 还需要完善 GlobalQueue 的实现
-    private val gqs = Seq.fill(gq_num)(Module(new GlobalQueue(dataWidth, lq_num, gq_cap, extintr_num)))
+    // 全局队列
+    private val gqs = Seq.fill(gq_num)(Module(new GlobalQueue(dataWidth, lq_num, gq_cap, extintr_num, softintr_num)))
 
-    private val s_idle :: s_wos :: s_wproc :: s_find :: s_alloc_gq :: s_gq_init :: s_alloc_lq :: s_ridx :: s_free_lq :: s_free_gq :: s_error :: Nil = Enum(11)
+    private val (
+        s_idle :: s_wos :: s_wproc :: s_find :: s_alloc_gq :: 
+        s_gq_init :: s_alloc_lq :: s_ridx :: s_free_lq :: 
+        s_free_gq :: s_error :: 
+        s_pass_sint0 :: s_pass_sint1 :: Nil 
+    ) = Enum(13)
 
     private val state = RegInit(s_idle)
 
@@ -60,6 +74,11 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         Seq.tabulate(lq_num) { j => 
             io.enqs(i * lq_num + j) <> gqs(i).io.enqs(j)
             io.deqs(i * lq_num + j) <> gqs(i).io.deqs(j)
+            io.register_sender(i * lq_num + j) <> gqs(i).io.register_sender(j)
+            io.cancel_sender(i * lq_num + j) <> gqs(i).io.cancel_sender(j)
+            io.register_receiver(i * lq_num + j) <> gqs(i).io.register_receiver(j)
+            io.send_intr(i * lq_num + j) <> gqs(i).io.send_intr(j)
+            dontTouch(io.send_intr(i * lq_num + j))
         }
         io.errors(i) <> gqs(i).io.error
         Seq.tabulate(extintr_num) { j =>
@@ -157,6 +176,37 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     }
 
     when(state === s_free_gq) {
+        state := s_idle
+    }
+
+    // 与软件中断相关的逻辑
+    private val has_sintr = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.send_intr_out.valid }.reverse)
+    private val sintr_idx = PriorityEncoder(Cat(0.U, has_sintr))
+    when(state === s_idle && has_sintr =/= 0.U) {
+        state := s_pass_sint0
+    }
+    for (i <- 0 until gq_num) {
+        gqs(i).io.send_intr_out.ready := state === s_pass_sint0 && sintr_idx === i.U
+    }
+    private val send_os = RegInit(0.U(dataWidth.W))
+    private val send_proc = RegInit(0.U(dataWidth.W))
+    when(state === s_pass_sint0) {
+        for(i <- 0 until gq_num) {
+            when(sintr_idx === i.U) {
+                os := gqs(i).io.send_intr_out.bits(dataWidth * 4 - 1, dataWidth * 3)
+                proc := gqs(i).io.send_intr_out.bits(dataWidth * 3 - 1, dataWidth * 2)
+                send_os := gqs(i).io.send_intr_out.bits(dataWidth * 2 - 1, dataWidth)
+                send_proc := gqs(i).io.send_intr_out.bits(dataWidth - 1, 0)
+            }
+        }
+        state := s_pass_sint1
+    }
+    for (i <- 0 until gq_num) {
+        gqs(i).io.recv_intr.valid := state === s_pass_sint1 && os_proc_idx === i.U
+        gqs(i).io.recv_intr.bits := Cat(send_os, send_proc)
+    }
+    private val has_recved = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.recv_intr.fire }.reverse)
+    when(state === s_pass_sint1 && has_recved =/= 0.U) {
         state := s_idle
     }
 
