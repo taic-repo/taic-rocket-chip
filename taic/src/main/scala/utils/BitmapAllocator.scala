@@ -14,9 +14,11 @@ class BitAllocator(val n: Int) extends Module {
         val free = Flipped(Decoupled(UInt(log2Ceil(n).W)))
         val alloc_count = Output((UInt((log2Ceil(n) + 1).W)))
         val full = Output(Bool())
+        val alloced = Output(UInt(n.W))
     })
 
     private val bitmap = RegInit(VecInit(Seq.fill(n)(true.B)))
+    io.alloced := ~Cat(bitmap.reverse)
     private val idx = PriorityEncoder(bitmap)
     io.alloc.bits := idx
     io.alloc.valid := true.B

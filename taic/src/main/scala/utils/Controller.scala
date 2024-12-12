@@ -209,5 +209,9 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     when(state === s_pass_sint1 && has_recved =/= 0.U) {
         state := s_idle
     }
+    // 接收方不在线，或者接收方不存在，这种处理是直接丢弃掉这个中断，后续需要增加额外的处理，来判断接收方是否存在
+    when(state === s_pass_sint1 && os_proc_idx === gq_num.U) {
+        state := s_idle
+    }
 
 }

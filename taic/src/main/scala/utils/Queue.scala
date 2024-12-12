@@ -8,6 +8,7 @@ object GQError {
   def not_init: Int = 2
   def no_send_perm: Int = 4
   def no_recv_perm: Int = 8
+  def no_lq: Int = 16
   
 }
 
@@ -126,6 +127,9 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         deq_idx := PriorityEncoder(Mux((has_deq & lq_not_emptys) =/= 0.U, has_deq, lq_not_emptys))
         when(os === 0.U && proc === 0.U) {
             error_code := error_code | GQError.not_init.U     // 队列没有初始化，即错误使用资源
+            state := s_error
+        }.elsewhen((has_deq & lq_allocator.io.alloced) === 0.U ) {
+            error_code := error_code | GQError.no_lq.U     // 对应的局部队列没有分配
             state := s_error
         }.otherwise {
             state := s_deq0
