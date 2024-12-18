@@ -1,0 +1,450 @@
+diff --git a/.gitignore b/.gitignore
+index 53e5b612..86a7b53d 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -13,3 +13,6 @@ docs-target/
+ /test_lib/
+ /testbuild/
+ rocketchip.jar
++project
++.bloop
++taic
+\ No newline at end of file
+diff --git a/emulator/Makefrag-verilator b/emulator/Makefrag-verilator
+index b80e9078..86c225c8 100644
+--- a/emulator/Makefrag-verilator
++++ b/emulator/Makefrag-verilator
+@@ -44,17 +44,18 @@ $(VERILATOR_SRCDIR)/bin/verilator: $(VERILATOR_SRCDIR)/Makefile
+ 
+ $(VERILATOR_SRCDIR)/Makefile: $(VERILATOR_SRCDIR)/configure
+ 	mkdir -p $(dir $@)
+-	cd $(dir $@) && ./configure --prefix=$(abspath verilator/install)
++	cd $(dir $@) && ./configure CFG_CXXFLAGS_STD_NEWEST=-std=c++17 --prefix=$(abspath verilator/install)
+ 
+ $(VERILATOR_SRCDIR)/configure: verilator/verilator-$(VERILATOR_VERSION).tar.gz
+ 	rm -rf $(dir $@)
+ 	mkdir -p $(dir $@)
+ 	cat $^ | tar -xz --strip-components=1 -C $(dir $@)
++	cd $(dir $@) && autoconf
+ 	touch $@
+ 
+ verilator/verilator-$(VERILATOR_VERSION).tar.gz:
+ 	mkdir -p $(dir $@)
+-	wget http://www.veripool.org/ftp/verilator-$(VERILATOR_VERSION).tgz -O $@
++	wget https://github.com/verilator/verilator/archive/refs/tags/v$(VERILATOR_VERSION).tar.gz -O $@
+ 
+ verilator: $(INSTALLED_VERILATOR)
+ 
+@@ -72,7 +73,7 @@ VERILATOR_FLAGS := --top-module $(MODEL) \
+   --output-split 20000 \
+   --output-split-cfuncs 20000 \
+   --threads $(VERILATOR_THREADS) -Wno-UNOPTTHREADS \
+-	-Wno-STMTDLY --x-assign unique \
++	-Wno-STMTDLY -Wno-LATCH -Wno-WIDTH --x-assign unique \
+   -I$(vsrc) \
+   -O3 -CFLAGS "$(CXXFLAGS) -DVERILATOR -DTEST_HARNESS=V$(MODEL) -include $(csrc)/verilator.h -include $(generated_dir)/$(PROJECT).$(CONFIG_STR).plusArgs" \
+   --max-num-width 1048576
+@@ -82,6 +83,8 @@ headers = $(wildcard $(csrc)/*.h)
+ model_header = $(generated_dir)/$(long_name)/V$(MODEL).h
+ model_header_debug = $(generated_dir_debug)/$(long_name)/V$(MODEL).h
+ 
++verilog: $(verilog)
++
+ $(emu): $(verilog) $(cppfiles) $(headers) $(INSTALLED_VERILATOR)
+ 	mkdir -p $(generated_dir)/$(long_name)
+ 	$(VERILATOR) $(VERILATOR_FLAGS) -Mdir $(generated_dir)/$(long_name) \
+diff --git a/src/main/scala/rocket/CSR.scala b/src/main/scala/rocket/CSR.scala
+index 2d8dd0e1..46c32440 100644
+--- a/src/main/scala/rocket/CSR.scala
++++ b/src/main/scala/rocket/CSR.scala
+@@ -379,15 +379,15 @@ class CSRFile(
+ 
+   val (supported_interrupts, delegable_interrupts) = {
+     val sup = Wire(new MIP)
+-    sup.usip := false
++    sup.usip := Bool(usingNE)
+     sup.ssip := Bool(usingSupervisor)
+     sup.vssip := Bool(usingHypervisor)
+     sup.msip := true
+-    sup.utip := false
++    sup.utip := Bool(usingNE)
+     sup.stip := Bool(usingSupervisor)
+     sup.vstip := Bool(usingHypervisor)
+     sup.mtip := true
+-    sup.ueip := false
++    sup.ueip := Bool(usingNE)
+     sup.seip := Bool(usingSupervisor)
+     sup.vseip := Bool(usingHypervisor)
+     sup.meip := true
+@@ -555,6 +555,21 @@ class CSRFile(
+   val reg_hpmcounter = io.counters.zipWithIndex.map { case (c, i) =>
+     WideCounter(CSR.hpmWidth, c.inc, reset = false, inhibit = reg_mcountinhibit(CSR.firstHPM+i)) }
+ 
++  /* Uintr CSR registers */
++  val (reg_sideleg, read_sideleg) = {
++    val del = Wire(new MIP)
++    del.usip := true
++    del.utip := true
++    del.ueip := true
++    val reg = RegInit(0.U(xLen.W))
++    (reg, Mux(usingNE, reg & del.asUInt, 0.U))
++  }
++  val reg_ucause = RegInit(0.U(xLen.W))
++  val reg_uepc = RegInit(0.U(vaddrBitsExtended.W))
++  val reg_utval = RegInit(0.U(vaddrBitsExtended.W))
++  val reg_uscratch = RegInit(0.U(xLen.W))
++  val reg_utvec = RegInit(0.U(vaddrBitsExtended.W))
++
+   val mip = Wire(init=reg_mip)
+   mip.lip := (io.interrupts.lip: Seq[Bool])
+   mip.mtip := io.interrupts.mtip
+@@ -562,6 +577,10 @@ class CSRFile(
+   mip.meip := io.interrupts.meip
+   // seip is the OR of reg_mip.seip and the actual line from the PLIC
+   io.interrupts.seip.foreach { mip.seip := reg_mip.seip || _ }
++  // ssip is the OR of reg_mip.ssip and the actual line from the controller
++  io.interrupts.ssip.foreach { mip.ssip := reg_mip.ssip || _ }
++  // usip is the OR of reg_mip.usip and the actual line from the controller
++  io.interrupts.usip.foreach { mip.usip := reg_mip.usip || _ }
+   // Simimlar sort of thing would apply if the PLIC had a VSEIP line:
+   //io.interrupts.vseip.foreach { mip.vseip := reg_mip.vseip || _ }
+   mip.rocc := io.rocc_interrupt
+@@ -576,9 +595,10 @@ class CSRFile(
+     io.interrupts.buserror.map(_ << CSR.rnmiBEUCause).getOrElse(0.U),
+     !io.interrupts.debug && nmi.rnmi && reg_rnmie)).getOrElse(0.U, false.B)
+   val m_interrupts = Mux(nmie && (reg_mstatus.prv <= PRV.S || reg_mstatus.mie), ~(~pending_interrupts | read_mideleg), UInt(0))
+-  val s_interrupts = Mux(nmie && (reg_mstatus.v || reg_mstatus.prv < PRV.S || (reg_mstatus.prv === PRV.S && reg_mstatus.sie)), pending_interrupts & read_mideleg & ~read_hideleg, UInt(0))
++  val s_interrupts = Mux(nmie && (reg_mstatus.v || reg_mstatus.prv < PRV.S || (reg_mstatus.prv === PRV.S && reg_mstatus.sie)), pending_interrupts & read_mideleg & ~read_hideleg & ~read_sideleg, UInt(0))
+   val vs_interrupts = Mux(nmie && (reg_mstatus.v && (reg_mstatus.prv < PRV.S || reg_mstatus.prv === PRV.S && reg_vsstatus.sie)), pending_interrupts & read_hideleg, UInt(0))
+-  val (anyInterrupt, whichInterrupt) = chooseInterrupt(Seq(vs_interrupts, s_interrupts, m_interrupts, nmi_interrupts, d_interrupts))
++  val u_interrupts = Mux(nmie && reg_mstatus.prv === PRV.U && reg_mstatus.uie, pending_interrupts & read_sideleg, UInt(0))
++  val (anyInterrupt, whichInterrupt) = chooseInterrupt(Seq(u_interrupts, vs_interrupts, s_interrupts, m_interrupts, nmi_interrupts, d_interrupts))
+   val interruptMSB = BigInt(1) << (xLen-1)
+   val interruptCause = UInt(interruptMSB) + (nmiFlag << (xLen-2)) + whichInterrupt
+   io.interrupt := (anyInterrupt && !io.singleStep || reg_singleStepped) && !(reg_debug || io.status.cease)
+@@ -607,6 +627,7 @@ class CSRFile(
+   val read_mstatus = io.status.asUInt()(xLen-1,0)
+   val read_mtvec = formTVec(reg_mtvec).padTo(xLen)
+   val read_stvec = formTVec(reg_stvec).sextTo(xLen)
++  val read_utvec = formTVec(reg_utvec).sextTo(xLen)
+ 
+   val read_mapping = LinkedHashMap[Int,Bits](
+     CSRs.tselect -> reg_tselect,
+@@ -792,6 +813,25 @@ class CSRFile(
+   // mimpid, marchid, and mvendorid are 0 unless overridden by customCSRs
+   Seq(CSRs.mimpid, CSRs.marchid, CSRs.mvendorid).foreach(id => read_mapping.getOrElseUpdate(id, 0.U))
+ 
++  if (usingNE) {
++    val read_uie = reg_mie & read_sideleg
++    val read_uip = read_mip & read_sideleg
++    val read_ustatus = Wire(init = 0.U.asTypeOf(new MStatus))
++    read_ustatus.upie := io.status.upie
++    read_ustatus.uie := io.status.uie
++    val uintr_csrs = LinkedHashMap[Int, Bits](
++      CSRs.ustatus -> (read_ustatus.asUInt())(xLen-1,0),
++      CSRs.uie -> read_uie.asUInt,
++      CSRs.uip -> read_uip.asUInt,
++      CSRs.ucause -> reg_ucause,
++      CSRs.uepc -> reg_uepc,
++      CSRs.utval -> reg_utval,
++      CSRs.utvec -> reg_utvec,
++      CSRs.uscratch -> reg_uscratch)
++    read_mapping ++= uintr_csrs
++    read_mapping += CSRs.sideleg -> read_sideleg
++  }
++
+   val decoded_addr = {
+     val addr = Cat(io.status.v, io.rw.addr)
+     val pats = for (((k, _), i) <- read_mapping.zipWithIndex)
+@@ -825,7 +865,8 @@ class CSRFile(
+     usingVM.option(              SFENCE_VMA->  List(N,N,N,N,N,Y,N,N,N)) ++
+     usingHypervisor.option(      HFENCE_VVMA-> List(N,N,N,N,N,N,Y,N,N)) ++
+     usingHypervisor.option(      HFENCE_GVMA-> List(N,N,N,N,N,N,N,Y,N)) ++
+-    (if (usingHypervisor)        hlsv.map(_->  List(N,N,N,N,N,N,N,N,Y)) else Seq())
++    (if (usingHypervisor)        hlsv.map(_->  List(N,N,N,N,N,N,N,N,Y)) else Seq()) ++
++    usingUser.option(            URET->        List(N,N,Y,N,N,N,N,N,N))
+   val insn_call :: insn_break :: insn_ret :: insn_cease :: insn_wfi :: _ :: _ :: _ :: _ :: Nil = {
+     val insn = ECALL.value.U | (io.rw.addr << 20)
+     DecodeLogic(insn, decode_table(0)._2.map(x=>X), decode_table).map(system_insn && _.asBool)
+@@ -905,13 +946,14 @@ class CSRFile(
+   val debugTVec = Mux(reg_debug, Mux(insn_break, debugEntry.U, debugException.U), debugEntry.U)
+   val delegate = Bool(usingSupervisor) && reg_mstatus.prv <= PRV.S && Mux(cause(xLen-1), read_mideleg(cause_lsbs), read_medeleg(cause_lsbs))
+   val delegateVS = reg_mstatus.v && delegate && Mux(cause(xLen-1), read_hideleg(cause_lsbs), read_hedeleg(cause_lsbs))
++  val delegateU = Bool(usingNE) && reg_mstatus.prv === PRV.U && delegate && read_sideleg(cause_lsbs) && cause(xLen - 1)
+   def mtvecBaseAlign = 2
+   def mtvecInterruptAlign = {
+     require(reg_mip.getWidth <= xLen)
+     log2Ceil(xLen)
+   }
+   val notDebugTVec = {
+-    val base = Mux(delegate, Mux(delegateVS, read_vstvec, read_stvec), read_mtvec)
++    val base = Mux(delegate, Mux(delegateVS, read_vstvec, Mux(delegateU, read_utvec, read_stvec)), read_mtvec)
+     val interruptOffset = cause(mtvecInterruptAlign-1, 0) << mtvecBaseAlign
+     val interruptVec = Cat(base >> (mtvecInterruptAlign + mtvecBaseAlign), interruptOffset)
+     val doVector = base(0) && cause(cause.getWidth-1) && (cause_lsbs >> mtvecInterruptAlign) === 0
+@@ -988,6 +1030,14 @@ class CSRFile(
+         reg_mnstatus.mpp := trimPrivilege(reg_mstatus.prv)
+         new_prv := PRV.M
+       }
++    }.elsewhen(delegateU && nmie) {
++      reg_mstatus.v := false
++      reg_uepc := epc
++      reg_ucause := cause
++      reg_utval := io.tval
++      reg_mstatus.upie := reg_mstatus.uie
++      reg_mstatus.uie := false
++      new_prv := PRV.U
+     }.elsewhen (delegateVS && nmie) {
+       reg_mstatus.v := true
+       reg_vsstatus.spp := reg_mstatus.prv
+@@ -1047,7 +1097,12 @@ class CSRFile(
+ 
+   when (insn_ret) {
+     val ret_prv = WireInit(UInt(), DontCare)
+-    when (Bool(usingSupervisor) && !io.rw.addr(9)) {
++    when (Bool(usingNE) && !io.rw.addr(9) && !io.rw.addr(8)) {
++      reg_mstatus.uie := reg_mstatus.upie
++      reg_mstatus.upie := true
++      ret_prv := PRV.U
++      io.evec := readEPC(reg_uepc)
++    }.elsewhen (Bool(usingSupervisor) && !io.rw.addr(9)) {
+       when (!reg_mstatus.v) {
+         reg_mstatus.sie := reg_mstatus.spie
+         reg_mstatus.spie := true
+@@ -1200,6 +1255,11 @@ class CSRFile(
+         reg_mip.ssip := new_mip.ssip
+         reg_mip.stip := new_mip.stip
+         reg_mip.seip := new_mip.seip
++        if (usingNE) {
++          reg_mip.usip := new_mip.usip
++          reg_mip.utip := new_mip.utip
++          reg_mip.ueip := new_mip.ueip
++        }
+       }
+       if (usingHypervisor) {
+         reg_mip.vssip := new_mip.vssip
+@@ -1276,6 +1336,11 @@ class CSRFile(
+       when (decoded_addr(CSRs.sip)) {
+         val new_sip = new MIP().fromBits((read_mip & ~read_mideleg) | (wdata & read_mideleg))
+         reg_mip.ssip := new_sip.ssip
++        if (usingNE) {
++          reg_mip.utip := new_sip.utip
++          reg_mip.usip := new_sip.usip
++          reg_mip.ueip := new_sip.ueip
++        }
+       }
+       when (decoded_addr(CSRs.satp)) {
+         if (usingVM) {
+@@ -1437,6 +1502,27 @@ class CSRFile(
+         reg_vxrm.get := wdata >> 1
+       }
+     }
++
++    if (usingNE) {
++      when (decoded_addr(CSRs.ustatus)) {
++        val new_ustatus = new MStatus().fromBits(wdata)
++        reg_mstatus.uie := new_ustatus.uie
++        reg_mstatus.upie := new_ustatus.upie
++      }
++      when (decoded_addr(CSRs.uip)) {
++        val new_uip = new MIP().fromBits((read_mip & ~read_sideleg) | (wdata & read_sideleg))
++        reg_mip.usip := new_uip.usip
++        reg_mip.utip := new_uip.utip
++        reg_mip.ueip := new_uip.ueip
++      }
++      when (decoded_addr(CSRs.uie)) { reg_mie := (reg_mie & ~read_sideleg) | (wdata & read_sideleg) }
++      when (decoded_addr(CSRs.uscratch)) { reg_uscratch := wdata }
++      when (decoded_addr(CSRs.uepc)) { reg_uepc := wdata }
++      when (decoded_addr(CSRs.utvec)) { reg_utvec := wdata }
++      when (decoded_addr(CSRs.utval)) { reg_utval := wdata }
++      when (decoded_addr(CSRs.ucause)) { reg_ucause := wdata & scause_mask }
++      when (decoded_addr(CSRs.sideleg)) { reg_sideleg := wdata }
++    }
+   }
+ 
+   io.vector.map { vio =>
+diff --git a/src/main/scala/rocket/IDecode.scala b/src/main/scala/rocket/IDecode.scala
+index ec253d25..4a42db4b 100644
+--- a/src/main/scala/rocket/IDecode.scala
++++ b/src/main/scala/rocket/IDecode.scala
+@@ -456,3 +456,9 @@ class RoCCDecode(implicit val p: Parameters) extends DecodeConstants
+     CUSTOM3_RD_RS1->    List(Y,N,Y,N,N,N,N,Y,N,A2_ZERO,A1_RS1, IMM_X, DW_XPR,FN_ADD,   N,M_X,        N,N,N,N,N,N,Y,CSR.N,N,N,N,N),
+     CUSTOM3_RD_RS1_RS2->List(Y,N,Y,N,N,N,Y,Y,N,A2_ZERO,A1_RS1, IMM_X, DW_XPR,FN_ADD,   N,M_X,        N,N,N,N,N,N,Y,CSR.N,N,N,N,N))
+ }
++
++class UDecode(implicit val p: Parameters) extends DecodeConstants
++{
++  val table: Array[(BitPat, List[BitPat])] = Array(
++    URET -> List(Y, N, N, N, N, N, N, X, N, A2_X, A1_X, IMM_X, DW_X, FN_X, N, M_X, N, N, N, N, N, N, N, CSR.I, N, N, N, N))
++}
+\ No newline at end of file
+diff --git a/src/main/scala/rocket/Instructions.scala b/src/main/scala/rocket/Instructions.scala
+index 07621f9a..8d55380a 100644
+--- a/src/main/scala/rocket/Instructions.scala
++++ b/src/main/scala/rocket/Instructions.scala
+@@ -814,7 +814,7 @@ object Instructions {
+   def XPERM4             = BitPat("b0010100??????????010?????0110011")
+   def XPERM8             = BitPat("b0010100??????????100?????0110011")
+   def ZEXT_H             = BitPat("b000010000000?????100?????0111011")
+-
++  def URET               = BitPat("b00000000001000000000000001110011")
+ }
+ object Causes {
+   val misaligned_fetch = 0x0
+@@ -1199,6 +1199,16 @@ object CSRs {
+   val mhpmcounter29h = 0xb9d
+   val mhpmcounter30h = 0xb9e
+   val mhpmcounter31h = 0xb9f
++  /* User Trap Setup */
++  val ustatus = 0x000
++  val uie = 0x004
++  val utvec = 0x005
++  /* User Trap Handling */
++  val uscratch = 0x040
++  val uepc = 0x041
++  val ucause = 0x042
++  val utval = 0x043
++  val uip = 0x044
+   val all = {
+     val res = collection.mutable.ArrayBuffer[Int]()
+     res += fflags
+@@ -1471,6 +1481,14 @@ object CSRs {
+     res += mimpid
+     res += mhartid
+     res += mconfigptr
++    res += ustatus
++    res += uie
++    res += utvec
++    res += uscratch
++    res += uepc
++    res += ucause
++    res += utval
++    res += uip
+     res.toArray
+   }
+   val all32 = {
+diff --git a/src/main/scala/rocket/RocketCore.scala b/src/main/scala/rocket/RocketCore.scala
+index 90b8d575..1203bcdd 100644
+--- a/src/main/scala/rocket/RocketCore.scala
++++ b/src/main/scala/rocket/RocketCore.scala
+@@ -17,6 +17,7 @@ import scala.collection.mutable.ArrayBuffer
+ case class RocketCoreParams(
+   bootFreqHz: BigInt = 0,
+   useVM: Boolean = true,
++  useNE: Boolean = false,
+   useUser: Boolean = false,
+   useSupervisor: Boolean = false,
+   useHypervisor: Boolean = false,
+@@ -184,6 +185,7 @@ class Rocket(tile: RocketTile)(implicit p: Parameters) extends CoreModule()(p)
+     (usingVM.option(new SVMDecode)) ++:
+     (usingSupervisor.option(new SDecode)) ++:
+     (usingHypervisor.option(new HypervisorDecode)) ++:
++    (usingNE.option(new UDecode)) ++:
+     ((usingHypervisor && (xLen == 64)).option(new Hypervisor64Decode)) ++:
+     (usingDebug.option(new DebugDecode)) ++:
+     (usingNMI.option(new NMIDecode)) ++:
+diff --git a/src/main/scala/subsystem/HasTiles.scala b/src/main/scala/subsystem/HasTiles.scala
+index 2cc20030..3014e355 100644
+--- a/src/main/scala/subsystem/HasTiles.scala
++++ b/src/main/scala/subsystem/HasTiles.scala
+@@ -13,6 +13,7 @@ import freechips.rocketchip.tile.{BaseTile, LookupByHartIdImpl, TileParams, Inst
+ import freechips.rocketchip.tilelink._
+ import freechips.rocketchip.prci.{ClockGroup, ResetCrossingType}
+ import freechips.rocketchip.util._
++import freechips.rocketchip.taic.CanHavePeripheryTAIC
+ 
+ /** Entry point for Config-uring the presence of Tiles */
+ case class TilesLocated(loc: HierarchicalLocation) extends Field[Seq[CanAttachTile]](Nil)
+@@ -101,6 +102,7 @@ case class TileSlavePortParams(
+   */
+ trait HasTileInterruptSources
+   extends CanHavePeripheryPLIC
++  with CanHavePeripheryTAIC
+   with CanHavePeripheryCLINT
+   with HasPeripheryDebug
+   with InstantiatesTiles
+@@ -317,6 +319,13 @@ trait CanAttachTile {
+           .getOrElse { context.seipNode.get }
+     }
+ 
++    //    From TAIC: "ssip", "usip" (only if user mode is enabled)
++    if (domain.tile.tileParams.core.useNE) {
++      domain.crossIntIn(crossingParams.crossingType) :=
++        context.taicOpt.map { _.intnode }
++          .getOrElse { NullIntSource() }
++    }
++
+     // 3. Local Interrupts ("lip") are required to already be synchronous to the Tile's clock.
+     // (they are connected to domain.tile.intInwardNode in a seperate trait)
+ 
+diff --git a/src/main/scala/tile/BaseTile.scala b/src/main/scala/tile/BaseTile.scala
+index a333912f..6fa870a3 100644
+--- a/src/main/scala/tile/BaseTile.scala
++++ b/src/main/scala/tile/BaseTile.scala
+@@ -43,6 +43,7 @@ trait HasNonDiplomaticTileParameters {
+   def tileParams: TileParams = p(TileKey)
+ 
+   def usingVM: Boolean = tileParams.core.useVM
++  def usingNE: Boolean = tileParams.core.useNE
+   def usingUser: Boolean = tileParams.core.useUser || usingSupervisor
+   def usingSupervisor: Boolean = tileParams.core.hasSupervisorMode
+   def usingHypervisor: Boolean = usingVM && tileParams.core.useHypervisor
+diff --git a/src/main/scala/tile/Core.scala b/src/main/scala/tile/Core.scala
+index 09fa4ad0..65e04f61 100644
+--- a/src/main/scala/tile/Core.scala
++++ b/src/main/scala/tile/Core.scala
+@@ -15,6 +15,7 @@ case object MaxHartIdBits extends Field[Int]
+ trait CoreParams {
+   val bootFreqHz: BigInt
+   val useVM: Boolean
++  val useNE: Boolean
+   val useHypervisor: Boolean
+   val useUser: Boolean
+   val useSupervisor: Boolean
+diff --git a/src/main/scala/tile/Interrupts.scala b/src/main/scala/tile/Interrupts.scala
+index bd7d2c8c..f05cdcfe 100644
+--- a/src/main/scala/tile/Interrupts.scala
++++ b/src/main/scala/tile/Interrupts.scala
+@@ -21,6 +21,8 @@ class TileInterrupts(implicit p: Parameters) extends CoreBundle()(p) {
+   val msip = Bool()
+   val meip = Bool()
+   val seip = usingSupervisor.option(Bool())
++  val ssip = usingNE.option(Bool())
++  val usip = usingNE.option(Bool())
+   val lip = Vec(coreParams.nLocalInterrupts, Bool())
+   val nmi = usingNMI.option(new NMI(resetVectorLen))
+ }
+@@ -62,8 +64,10 @@ trait SinksExternalInterrupts { this: BaseTile =>
+   // debug, msip, mtip, meip, seip, lip offsets in CSRs
+   def csrIntMap: List[Int] = {
+     val nlips = tileParams.core.nLocalInterrupts
++    val usip = if (usingNE) Seq(0) else Nil
++    val ssip = if (usingNE) Seq(1) else Nil
+     val seip = if (usingSupervisor) Seq(9) else Nil
+-    List(65535, 3, 7, 11) ++ seip ++ List.tabulate(nlips)(_ + 16)
++    List(65535, 3, 7, 11) ++ seip ++ ssip ++ usip ++ List.tabulate(nlips)(_ + 16)
+   }
+ 
+   // go from flat diplomatic Interrupts to bundled TileInterrupts
+@@ -75,11 +79,13 @@ trait SinksExternalInterrupts { this: BaseTile =>
+       core.meip)
+ 
+     val seip = if (core.seip.isDefined) Seq(core.seip.get) else Nil
++    val ssip = if (core.ssip.isDefined) Seq(core.ssip.get) else Nil
++    val usip = if (core.usip.isDefined) Seq(core.usip.get) else Nil
+ 
+     val core_ips = core.lip
+ 
+     val (interrupts, _) = intSinkNode.in(0)
+-    (async_ips ++ periph_ips ++ seip ++ core_ips).zip(interrupts).foreach { case(c, i) => c := i }
++    (async_ips ++ periph_ips ++ seip ++ ssip ++ usip ++ core_ips).zip(interrupts).foreach { case(c, i) => c := i }
+   }
+ }
+ 
+diff --git a/verilator.hash b/verilator.hash
+index ecd043ae..c9014029 100644
+--- a/verilator.hash
++++ b/verilator.hash
+@@ -1 +1 @@
+-4.028
++4.226
