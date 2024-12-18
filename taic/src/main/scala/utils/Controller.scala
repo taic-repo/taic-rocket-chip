@@ -30,7 +30,11 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
         val register_receiver = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
         // MMIO 接口
         val send_intr = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
-
+        // hartid
+        val whartid = Vec(gq_num * lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val hartids = Vec(gq_num, Output(UInt(dataWidth.W)))
+        val ssips = Vec(gq_num, Output(Bool()))
+        val usips = Vec(gq_num, Output(Bool()))
     })
 
     // 申请时需要记录的信息
@@ -79,6 +83,10 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
             io.register_receiver(i * lq_num + j) <> gqs(i).io.register_receiver(j)
             io.send_intr(i * lq_num + j) <> gqs(i).io.send_intr(j)
             dontTouch(io.send_intr(i * lq_num + j))
+            io.whartid(i * lq_num + j) <> gqs(i).io.whartid(j)
+            io.hartids(i) := gqs(i).io.hartid
+            io.ssips(i) := gqs(i).io.ssip
+            io.usips(i) := gqs(i).io.usip
         }
         io.errors(i) <> gqs(i).io.error
         Seq.tabulate(extintr_num) { j =>

@@ -45,7 +45,28 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         val send_intr_out = Decoupled(UInt((dataWidth * 4).W))
         // 暴露给控制器的接收中断的接口
         val recv_intr = Flipped(Decoupled(UInt((dataWidth * 2).W)))
+        val whartid = Vec(lq_num, Flipped(Decoupled(UInt(dataWidth.W))))
+        val hartid = Output(UInt(dataWidth.W))
+        val ssip = Output(Bool())
+        val usip = Output(Bool())
     })
+    private val ssip = RegInit(false.B)
+    private val usip = RegInit(false.B)
+    // 记录 hartid，用于向指定的核发送中断
+    private val hartid = RegInit(Fill(dataWidth, 1.U))
+    private val hartid_arb = Module(new Arbiter(UInt(dataWidth.W), lq_num))
+    for (i <- 0 until lq_num) {
+        hartid_arb.io.in(i).valid := io.whartid(i).valid
+        hartid_arb.io.in(i).bits := io.whartid(i).bits
+        io.whartid(i).ready := true.B
+    }
+    hartid_arb.io.out.ready := true.B
+    when(hartid_arb.io.out.fire) {
+        hartid := hartid_arb.io.out.bits
+    }
+    io.hartid := hartid
+    io.ssip := ssip
+    io.usip := usip
 
     private val lq_allocator = Module(new BitAllocator(lq_num))
     io.lq_count := lq_allocator.io.alloc_count
@@ -124,7 +145,11 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
     
     when(state === s_idle && has_deq =/= 0.U) {
         req_deq_idx := PriorityEncoder(has_deq)
-        deq_idx := PriorityEncoder(Mux((has_deq & lq_not_emptys) =/= 0.U, has_deq, lq_not_emptys))
+        // 如果存在中断，则从第一个局部队列中取出任务，否则从非空的局部队列中取出任务
+        deq_idx := Mux(ssip | usip, 0.U, PriorityEncoder(Mux((has_deq & lq_not_emptys) =/= 0.U, has_deq, lq_not_emptys)))
+        // 无论是否存在中断，在下一次取出任务时，都将中断清空
+        ssip := false.B
+        usip := false.B
         when(os === 0.U && proc === 0.U) {
             error_code := error_code | GQError.not_init.U     // 队列没有初始化，即错误使用资源
             state := s_error
@@ -187,8 +212,12 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         for(i <- 0 until lq_num) {
             when(i.U === enq_idx) {
                 enq_data := Mux(is_waked, enq_data, io.enqs(i).bits)
-                // TODO：增加判断逻辑，是否需要将其放入队头，以及是否需要发送中断信号给 CPU
-                data_array_idx := lqmetas(i).io.tail
+                // 根据是否需要抢占，来判断将其放入队头还是队尾
+                data_array_idx := Mux(is_waked & (enq_data(0) === 1.U), lqmetas(i).io.head, lqmetas(i).io.tail)
+                // 如果是内核，则 proc === 0，需要根据抢占标记拉高 ssip
+                ssip := Mux(proc === 0.U, is_waked & (enq_data(0) === 1.U), 0.U)
+                // 如果是用户，则 proc =/= 1，需要根据抢占标记拉高 usip
+                usip := Mux(proc =/= 0.U, is_waked & (enq_data(0) === 1.U), 0.U)
             }
         }
         state := s_enq1

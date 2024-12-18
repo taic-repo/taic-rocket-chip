@@ -22,6 +22,11 @@ object TAICConsts {
   def softintr_num = 6
 }
 
+class IpStatus extends Bundle {
+  val has_intr = Bool()
+  val hartid = UInt(TAICConsts.dataWidth.W)
+}
+
 case class TAICParams(baseAddress: BigInt = TAICConsts.base, intStages: Int = 0) {
   def address = AddressSet(baseAddress, TAICConsts.size - 1)
 }
@@ -52,7 +57,7 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
     concurrency = 1) // limiting concurrency handles RAW hazards on claim registers
 
   val intnode: IntNexusNode = IntNexusNode(
-    sourceFn = { _ => IntSourcePortParameters(Seq(IntSourceParameters(1, Seq(Resource(device, "int"))))) },
+    sourceFn = { _ => IntSourcePortParameters(Seq(IntSourceParameters(2, Seq(Resource(device, "int"))))) },
     sinkFn   = { _ => IntSinkPortParameters(Seq(IntSinkParameters())) },
     outputRequiresInput = false,
     inputRequiresOutput = false)
@@ -64,70 +69,87 @@ class TAIC(params: TAICParams, beatBytes: Int)(implicit p: Parameters) extends L
 
     // Compact the interrupt vector the same way
     val interrupts = intnode.in.map { case (i, e) => i.take(e.source.num) }.flatten
-    
-    println(s"TAIC map ${nDevices} external interrupts:")
-
+    val nTiles = intnode.out.size
+    println(s"TAIC map ${nDevices} external interrupts, ${nTiles} Tiles")
 
     val controller = Module(new Controller(TAICConsts.gq_num, TAICConsts.lq_num, TAICConsts.gq_cap, TAICConsts.dataWidth, nDevices, TAICConsts.softintr_num))
+    val ssip_status = Seq.tabulate(TAICConsts.gq_num) { i =>
+      val ssip = controller.io.ssips(i)
+      val hartid = controller.io.hartids(i)
+      val ip_status = Wire(new IpStatus)
+      ip_status.has_intr := ssip
+      ip_status.hartid := hartid
+      ip_status
+    }
+    val usip_status = Seq.tabulate(TAICConsts.gq_num) { i =>
+      val usip = controller.io.usips(i)
+      val hartid = controller.io.hartids(i)
+      val ip_status = Wire(new IpStatus)
+      ip_status.has_intr := usip
+      ip_status.hartid := hartid
+      ip_status
+    }
+    
+    val core_ssips = Seq.fill(nTiles) { RegInit(0.U) }
+    core_ssips.zipWithIndex.foreach { case (hart, i) =>
+      hart := ssip_status.map(x => x.has_intr && x.hartid === i.asUInt).reduce(_ || _)
+    }
+    val core_usips = Seq.fill(nTiles) { RegInit(0.U) }
+    core_usips.zipWithIndex.foreach { case (hart, i) =>
+      hart := usip_status.map(x => x.has_intr && x.hartid === i.asUInt).reduce(_ || _)
+    }
+    
+    val (intnode_out, _) = intnode.out.unzip
+    intnode_out.zipWithIndex.foreach { case (int, i) =>
+      int(0) := ShiftRegister(core_ssips(i)(0), params.intStages) // ssip
+      int(1) := ShiftRegister(core_usips(i)(0), params.intStages) // usip
+    }
+    
     val simExtIntr = Seq.fill(nDevices)(RegInit(false.B))
     Seq.tabulate(nDevices) { i =>
       controller.io.ext_intrs(i) := Mux(interrupts(i), interrupts(i), simExtIntr(i))
     }
     val bitallocatorRegs = Seq(
-      0x00 -> Seq(RegField(64, controller.io.alloced, controller.io.alloc)),
-      0x08 -> Seq(RegField.w(64, controller.io.free)),
+      0x00 -> Seq(RegField(TAICConsts.dataWidth, controller.io.alloced, controller.io.alloc)),
+      0x08 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.free)),
     )
     val enqRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size -> Seq(RegField.w(64, controller.io.enqs(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.enqs(i)))
     }
     val deqRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x08 -> Seq(RegField.r(64, controller.io.deqs(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x08 -> Seq(RegField.r(TAICConsts.dataWidth, controller.io.deqs(i)))
     }
     val errRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x10 -> Seq(RegField.r(64, controller.io.errors(i / TAICConsts.lq_num)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x10 -> Seq(RegField.r(TAICConsts.dataWidth, controller.io.errors(i / TAICConsts.lq_num)))
     }
     val senderRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x18 -> Seq(RegField.w(64, controller.io.register_sender(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x18 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.register_sender(i)))
     }
     val cancelRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x20 -> Seq(RegField.w(64, controller.io.cancel_sender(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x20 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.cancel_sender(i)))
     }
     val receiverRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x28 -> Seq(RegField.w(64, controller.io.register_receiver(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x28 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.register_receiver(i)))
     }
     val sendIntrRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
-      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x30 -> Seq(RegField.w(64, controller.io.send_intr(i)))
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x30 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.send_intr(i)))
+    }
+    val whartidRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
+      TAICConsts.lq_base + i * TAICConsts.lq_size + 0x38 -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.whartid(i)))
     }
     val extintrRegs = Seq.tabulate(TAICConsts.gq_num * TAICConsts.lq_num) { i =>
       Seq.tabulate(nDevices) { j =>
-        TAICConsts.lq_base + i * TAICConsts.lq_size + 0x38 + 8 * j -> Seq(RegField.w(64, controller.io.register_ext_intr(i * nDevices + j)))
+        TAICConsts.lq_base + i * TAICConsts.lq_size + 0x40 + 8 * j -> Seq(RegField.w(TAICConsts.dataWidth, controller.io.register_ext_intr(i * nDevices + j)))
       }
     }.flatten
     val simExtIntrRegs = Seq.tabulate(nDevices) { i =>
-      0x10 + 0x08 * i -> Seq(RegField.w(64, RegWriteFn { (valid, data) =>
+      0x10 + 0x08 * i -> Seq(RegField.w(TAICConsts.dataWidth, RegWriteFn { (valid, data) =>
         simExtIntr(i) := valid
         true.B
       }))
     }
-    // val queue = Module(new GlobalQueue(64, 2, 4))
-    // val bitallocatorRegs = Seq(
-    //   0x00 -> Seq(RegField.r(64, queue.io.alloc_lq)),
-    //   0x08 -> Seq(RegField.w(64, queue.io.free_lq)),
-    // )
-    // val enqRegs = Seq.tabulate(2) { i =>
-    //   0x10 + 8 * i -> Seq(RegField.w(64, queue.io.enqs(i)))
-    // }
-    // val deqRegs = Seq.tabulate(2) { i =>
-    //   0x20 + 8 * i -> Seq(RegField.r(64, queue.io.deqs(i)))
-    // }
-    // val errRegs = Seq(
-    //   0x30 -> Seq(RegField.r(64, queue.io.error))
-    // )
 
-
-    // node.regmap((deqReg ++ enqRegs ++ extintrRegs ++ simExtIntrRegs): _*)
-    // node.regmap((bitallocatorRegs): _*)
-    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs ++ senderRegs ++ cancelRegs ++ receiverRegs ++ sendIntrRegs ++ extintrRegs ++ simExtIntrRegs): _*)
+    node.regmap((bitallocatorRegs ++ enqRegs ++ deqRegs ++ errRegs ++ senderRegs ++ cancelRegs ++ receiverRegs ++ sendIntrRegs ++ whartidRegs ++ extintrRegs ++ simExtIntrRegs): _*)
 
   }
 }
