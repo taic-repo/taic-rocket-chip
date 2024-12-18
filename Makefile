@@ -15,6 +15,7 @@ init:
 	cd $(ROOT_DIR) && git submodule update --init --recursive
 	rm -rf $(ROCKET_DIR)/src/main/scala/taic
 	ln -rs $(TAIC_SCALA) $(ROCKET_DIR)/src/main/scala/taic
+	cd $(ROCKET_DIR) && git apply $(ROOT_DIR)/rocket-chip-taic-usint.patch
 
 #--------------------------------------------------------------------
 # Testbench generated and simulated by default configurations of rocket chip
