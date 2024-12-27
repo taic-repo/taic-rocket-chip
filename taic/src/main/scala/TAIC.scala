@@ -15,7 +15,7 @@ object TAICConsts {
   def size = 0x1000000
   def gq_num = 4
   def lq_num = 2
-  def gq_cap = 4
+  def gq_cap = 64
   def dataWidth = 64
   def lq_base = 0x1000
   def lq_size = 0x1000
