@@ -195,7 +195,6 @@
                 xlnx,gtinex = <0x0>;
                 xlnx,gtlocation = <0x0>;
                 xlnx,gtrefclksrc = <0x0>;
-                xlnx,include-dre ;
                 xlnx,instantiatebitslice0 = <0x0>;
                 xlnx,num-queues = /bits/ 16 <0x1>;
                 xlnx,phy-type = <0x3>;
@@ -205,13 +204,15 @@
                 xlnx,rxcsum = <0x0>;
                 xlnx,rxlane0-placement = <0x0>;
                 xlnx,rxlane1-placement = <0x0>;
-                xlnx,rxmem = <0x1000>;
+                xlnx,rxmem = <0x8000>;
+                xlnx,txmem = <0x8000>;
                 xlnx,rxnibblebitslice0used = <0x0>;
                 xlnx,tx-in-upper-nibble = <0x1>;
                 xlnx,txcsum = <0x0>;
                 xlnx,txlane0-placement = <0x0>;
                 xlnx,txlane1-placement = <0x0>;
                 xlnx,versal-gt-board-flow = <0x0>;
+                max-speed = <1000>;
                 zclock-names = "NULL";
                 zclocks = "NULL";
                 phy-handle = <&phy0>;
@@ -220,7 +221,7 @@
                     #size-cells = <0>;
                     phy0: ethernet-phy@0 {
                         device_type = "ethernet-phy";
-                        reg = <0>;
+                        reg = <1>;
                     };
                 };
             };
@@ -246,7 +247,6 @@
                 interrupts = <4 5>;
                 reg = <0x0 0x60100000 0x0 0x10000>;
                 xlnx,addrwidth = /bits/ 8 <0x20>;
-                xlnx,include-dre ;
                 xlnx,num-queues = /bits/ 16 <0x1>;
             };
         };

@@ -428,6 +428,7 @@ proc create_root_design { parentCell } {
 
 
   # Create ports
+  set UART_rxd [ create_bd_port -dir I UART_rxd ]
   set UART_txd [ create_bd_port -dir O UART_txd ]
   set clock [ create_bd_port -dir O -type clk clock ]
   set_property -dict [ list \
@@ -859,7 +860,6 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   connect_bd_net -net axi_uart16550_0_ip2intc_irpt [get_bd_pins axi_uart16550_0/ip2intc_irpt] [get_bd_pins xlconcat_0/In0]
   connect_bd_net -net axi_uart16550_0_sout [get_bd_ports UART_txd] [get_bd_pins axi_uart16550_0/sout] [get_bd_pins axi_uartlite_0/rx]
   connect_bd_net -net axi_uartlite_0_interrupt [get_bd_pins axi_uartlite_0/interrupt] [get_bd_pins zynq_ultra_ps_e_0/pl_ps_irq0]
-  connect_bd_net -net axi_uartlite_0_tx [get_bd_pins axi_uart16550_0/sin] [get_bd_pins axi_uartlite_0/tx]
   connect_bd_net -net clk_wiz_0_clk_100M [get_bd_pins axi_eth_dma/axis_clk] [get_bd_pins axi_eth_dma/s_axi_lite_clk] [get_bd_pins axi_gpio_0/s_axi_aclk] [get_bd_pins axi_gpio_1/s_axi_aclk] [get_bd_pins axi_interconnect_ps/ACLK] [get_bd_pins axi_interconnect_ps/M00_ACLK] [get_bd_pins axi_interconnect_ps/M01_ACLK] [get_bd_pins axi_interconnect_ps/M02_ACLK] [get_bd_pins axi_interconnect_ps/S00_ACLK] [get_bd_pins axi_interconnect_rocket_mmio/ACLK] [get_bd_pins axi_interconnect_rocket_mmio/M00_ACLK] [get_bd_pins axi_interconnect_rocket_mmio/M01_ACLK] [get_bd_pins axi_interconnect_rocket_mmio/M02_ACLK] [get_bd_pins axi_uart16550_0/s_axi_aclk] [get_bd_pins axi_uartlite_0/s_axi_aclk] [get_bd_pins clk_wiz_0/clk_100M] [get_bd_pins zynq_ultra_ps_e_0/maxihpm0_fpd_aclk]
   connect_bd_net -net clk_wiz_0_clk_50M [get_bd_ports clock] [get_bd_pins axi_interconnect_rocket_mmio/S00_ACLK] [get_bd_pins clk_wiz_0/clk_50M] [get_bd_pins proc_sys_reset_0/slowest_sync_clk] [get_bd_pins zynq_ultra_ps_e_0/saxihp0_fpd_aclk]
   connect_bd_net -net clk_wiz_0_locked [get_bd_pins clk_wiz_0/locked] [get_bd_pins proc_sys_reset_0/dcm_locked]
@@ -868,6 +868,7 @@ Port;FD4A0000;FD4AFFFF;1|FPD;DPDMA;FD4C0000;FD4CFFFF;1|FPD;DDR_XMPU5_CFG;FD05000
   connect_bd_net -net proc_sys_reset_0_mb_reset [get_bd_ports reset] [get_bd_pins proc_sys_reset_0/mb_reset]
   connect_bd_net -net proc_sys_reset_0_peripheral_aresetn [get_bd_pins axi_eth_dma/s_axi_lite_resetn] [get_bd_pins axi_gpio_0/s_axi_aresetn] [get_bd_pins axi_gpio_1/s_axi_aresetn] [get_bd_pins axi_interconnect_ps/M00_ARESETN] [get_bd_pins axi_interconnect_ps/M01_ARESETN] [get_bd_pins axi_interconnect_ps/M02_ARESETN] [get_bd_pins axi_interconnect_ps/S00_ARESETN] [get_bd_pins axi_interconnect_rocket_mmio/M00_ARESETN] [get_bd_pins axi_interconnect_rocket_mmio/M01_ARESETN] [get_bd_pins axi_interconnect_rocket_mmio/M02_ARESETN] [get_bd_pins axi_interconnect_rocket_mmio/S00_ARESETN] [get_bd_pins axi_uart16550_0/s_axi_aresetn] [get_bd_pins axi_uartlite_0/s_axi_aresetn] [get_bd_pins proc_sys_reset_0/peripheral_aresetn]
   connect_bd_net -net rst_ps8_0_96M_peripheral_aresetn [get_bd_pins axi_eth_dma/ARESETN] [get_bd_pins rst_ps8_0_96M/peripheral_aresetn]
+  connect_bd_net -net sin_0_1 [get_bd_ports UART_rxd] [get_bd_pins axi_uart16550_0/sin]
   connect_bd_net -net xlconcat_0_dout [get_bd_ports ext_intrs] [get_bd_pins xlconcat_0/dout]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_clk0 [get_bd_pins axi_eth_dma/ACLK] [get_bd_pins clk_wiz_0/clk_in1] [get_bd_pins rst_ps8_0_96M/slowest_sync_clk] [get_bd_pins zynq_ultra_ps_e_0/pl_clk0]
   connect_bd_net -net zynq_ultra_ps_e_0_pl_resetn0 [get_bd_pins proc_sys_reset_0/ext_reset_in] [get_bd_pins rst_ps8_0_96M/ext_reset_in] [get_bd_pins zynq_ultra_ps_e_0/pl_resetn0]

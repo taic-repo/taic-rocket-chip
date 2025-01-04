@@ -2,7 +2,7 @@
 `include "axi.vh"
 
 module system_wrapper(
-  // input wire UART_rxd,
+  input wire UART_rxd,
   input wire sys_clk_clk_p,
   input wire sys_clk_clk_n,
   output wire UART_txd,
@@ -128,7 +128,7 @@ module system_wrapper(
     .led                (led                ),
 
     .UART_txd           (UART_txd           ),
-    // .UART_rxd           (UART_rxd           ),
+    .UART_rxd           (UART_rxd           ),
     
     `axi_connect_if(M_DMA_AXI, DMA_AXI),
     
