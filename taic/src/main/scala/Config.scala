@@ -40,7 +40,7 @@ class WithNEBigCores(n: Int, overrideIdOffset: Option[Int] = None) extends Confi
 })
 
 class TaicConfig extends Config(
-  new WithNEBigCores(2) ++
+  new WithNEBigCores(4) ++
     new WithNExtTopInterrupts(6) ++
     new WithTimebase((BigInt(10000000))) ++ // 10 MHz
     new WithDTS("freechips.rocketchip-unknown", Nil) ++
