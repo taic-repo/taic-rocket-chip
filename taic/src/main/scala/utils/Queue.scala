@@ -287,8 +287,8 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
     private val extintr_arbs = Seq.fill(extintr_num)(Module(new Arbiter(UInt(dataWidth.W), lq_num)))
     for (i <- 0 until extintr_num) {
         for (j <- 0 until lq_num) {
-            extintr_arbs(i).io.in(j).valid := io.register_ext_intr(j * lq_num + i).valid
-            extintr_arbs(i).io.in(j).bits := io.register_ext_intr(j * lq_num + i).bits
+            extintr_arbs(i).io.in(j).valid := io.register_ext_intr(j * extintr_num + i).valid
+            extintr_arbs(i).io.in(j).bits := io.register_ext_intr(j * extintr_num + i).bits
         }
         extintr_arbs(i).io.out <> ext_intr_slots.io.register(i)
     }
@@ -431,7 +431,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         recv_proc := send_intr_arb_bits
         softintr_state := sint_sendintr1
     }
-    private val recv_os_proc_matches = Cat(Seq.tabulate(lq_num) { i => softintr_slots.io.can_send(i) === Cat(recv_os, recv_proc) }.reverse)
+    private val recv_os_proc_matches = Cat(Seq.tabulate(softintr_num) { i => softintr_slots.io.can_send(i) === Cat(recv_os, recv_proc) }.reverse)
     io.send_intr_out.bits := Cat(recv_os, recv_proc, os, proc)
     private val send_ok = RegInit(false.B)
     io.send_intr_out.valid := send_ok
@@ -453,7 +453,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         send_os_proc := io.recv_intr.bits
         state := s_recv_intr0
     }
-    private val send_os_proc_matches = Cat(Seq.tabulate(lq_num) { i => softintr_slots.io.can_recv(i) === send_os_proc }.reverse)
+    private val send_os_proc_matches = Cat(Seq.tabulate(softintr_num) { i => softintr_slots.io.can_recv(i) === send_os_proc }.reverse)
     private val handler_idx = PriorityEncoder(Cat(0.U, send_os_proc_matches))
     for(i <- 0 until softintr_num) {
         softintr_slots.io.wake_handler(i).ready := state === s_recv_intr0 && i.U === handler_idx
