@@ -470,7 +470,7 @@ class GlobalQueue(val dataWidth: Int, val lq_num: Int, val gq_cap: Int, val exti
         state := s_recv_intr1     
     }
     when(state === s_recv_intr1) {
-        when(handler_idx =/= softintr_num.U && enq_data =/= 0.U) {
+        when(enq_data =/= 0.U) {
             send_os_proc := 0.U
             state := s_enq0
         }.otherwise {
