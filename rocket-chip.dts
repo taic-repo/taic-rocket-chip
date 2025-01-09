@@ -331,8 +331,10 @@
                 L27: taic@1000000 {
                         #address-cells = <2>;
                         #interrupt-cells = <1>;
-                        compatible = "riscv,taic";
+                        compatible = "riscv,taic0";
                         interrupt-controller;
+                        gq-num = /bits/ 8 <0x04>;
+                        lq-num = /bits/ 8 <0x08>;
                         interrupts-extended = <&L2 1 &L2 0 &L5 1 &L5 0 &L8 1 &L8 0 &L11 1 &L11 0 &L14 1 &L14 0 &L17 1 &L17 0 &L20 1 &L20 0 &L23 1 &L23 0>;
                         reg = <0x0 0x1000000 0x0 0x1000000>;
                         reg-names = "control";
