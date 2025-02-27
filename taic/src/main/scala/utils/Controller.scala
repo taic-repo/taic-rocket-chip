@@ -198,11 +198,14 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     }
     private val send_os = RegInit(0.U(dataWidth.W))
     private val send_proc = RegInit(0.U(dataWidth.W))
+    // 记录中断编号，编号被编码在 proc 中
+    private val irq_idx = RegInit(0.U(dataWidth.W))
     when(state === s_pass_sint0) {
         for(i <- 0 until gq_num) {
             when(sintr_idx === i.U) {
                 os := gqs(i).io.send_intr_out.bits(dataWidth * 4 - 1, dataWidth * 3)
-                proc := gqs(i).io.send_intr_out.bits(dataWidth * 3 - 1, dataWidth * 2)
+                proc := Cat(0.U((dataWidth / 2).W), gqs(i).io.send_intr_out.bits(dataWidth * 3 - 1, dataWidth * 2 + dataWidth / 2))
+                irq_idx := Cat(0.U((dataWidth / 2).W), gqs(i).io.send_intr_out.bits(dataWidth * 2 + dataWidth / 2 - 1, dataWidth * 2))
                 send_os := gqs(i).io.send_intr_out.bits(dataWidth * 2 - 1, dataWidth)
                 send_proc := gqs(i).io.send_intr_out.bits(dataWidth - 1, 0)
             }
@@ -211,7 +214,7 @@ class Controller(val gq_num: Int, val lq_num: Int, val gq_cap: Int, val dataWidt
     }
     for (i <- 0 until gq_num) {
         gqs(i).io.recv_intr.valid := state === s_pass_sint1 && os_proc_idx === i.U
-        gqs(i).io.recv_intr.bits := Cat(send_os, send_proc)
+        gqs(i).io.recv_intr.bits := Cat(send_os, Cat(send_proc((dataWidth / 2) - 1, 0), irq_idx((dataWidth / 2) - 1, 0)))
     }
     private val has_recved = Cat(Seq.tabulate(gq_num) { i => gqs(i).io.recv_intr.fire }.reverse)
     when(state === s_pass_sint1 && has_recved =/= 0.U) {
