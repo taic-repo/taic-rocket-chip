@@ -22,7 +22,7 @@ class ExtIntrSlots(val n: Int, val dataWidth: Int) extends Module {
         io.register(i).ready := true.B
         io.wake_handler(i).valid := true.B
         io.wake_handler(i).bits := handlers(i)
-        handlers(i) := Mux(io.clean.fire, 0.U, Mux(io.register(i).fire, io.register(i).bits, Mux(io.wake_handler(i).fire, 0.U, handlers(i))))
+        handlers(i) := Mux(io.clean.fire, 0.U, Mux(io.register(i).fire, io.register(i).bits, Mux(io.wake_handler(i).fire, Mux(handlers(i)(1) === 0.U, 0.U, handlers(i)), handlers(i))))
     }
     
 

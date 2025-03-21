@@ -54,8 +54,8 @@ class SoftIntrSlots(val n: Int, val dataWidth: Int) extends Module {
         io.wake_handler(i).bits := recvcaps(i)(dataWidth * 3 - 1, dataWidth * 2)
         io.can_send(i) := sendcap(i)
         io.can_recv(i) := recvcaps(i)(dataWidth * 2 - 1, 0)
-        sendcap(i) := Mux(state === s_clean, 0.U, Mux(state === s_reg_send1 && send_empty_idx === i.U && send_matches === 0.U, Cat(os, proc), Mux(state === s_cancel_send1 && send_matched_idx === i.U, 0.U, sendcap(i))))
-        recvcaps(i) := Mux(state === s_clean, 0.U, Mux(state === s_reg_recv2 && recv_empty_idx === i.U && recv_matches === 0.U, Cat(task, os, proc), Mux(state === s_idle && io.wake_handler(i).fire, 0.U, recvcaps(i))))
+        sendcap(i) := Mux(state === s_clean, 0.U, Mux(state === s_reg_send1 && (send_empty_idx === i.U || send_matched_idx === i.U), Cat(os, proc), Mux(state === s_cancel_send1 && send_matched_idx === i.U, 0.U, sendcap(i))))
+        recvcaps(i) := Mux(state === s_clean, 0.U, Mux(state === s_reg_recv2 && (recv_empty_idx === i.U || recv_matched_idx === i.U), Cat(task, os, proc), Mux(state === s_idle && io.wake_handler(i).fire, Mux(recvcaps(i)(dataWidth * 2 + 1) === 0.U, 0.U, recvcaps(i)), recvcaps(i))))
     }
 
     when(state === s_idle && io.register_sender.fire) {
